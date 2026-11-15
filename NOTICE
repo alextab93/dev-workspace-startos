@@ -1,0 +1,8 @@
+The terminal icon is from Lucide, commit b826f0c527e1498f5e46f41ca0277ccab144bf31.
+Source: https://github.com/lucide-icons/lucide/blob/b826f0c527e1498f5e46f41ca0277ccab144bf31/icons/terminal.svg
+The stroke color was changed for this package.
+Applicable Lucide and Feather notices are in assets/LUCIDE-LICENSE.
+Container components retain their respective upstream licenses.
+The bundled start-cli 2.8.0 is from Start9 Labs under the MIT license.
+Its notice is retained in assets/START-CLI-LICENSE and the container's license directory.
+Source: https://github.com/Start9Labs/start-technologies/tree/start-cli/v2.8.0

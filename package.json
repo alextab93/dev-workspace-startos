@@ -1,0 +1,20 @@
+{
+  "name": "dev-workspace-startos",
+  "dependencies": {
+    "@start9labs/start-sdk": "3.1.1"
+  },
+  "overrides": {
+    "@start9labs/start-sdk": "$@start9labs/start-sdk"
+  },
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit && node node_modules/@start9labs/start-sdk/lint.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:runtime": "python3 tests/runtime.py",
+    "format": "prettier --write startos tests/*.ts",
+    "format:check": "prettier --check startos tests/*.ts"
+  },
+  "devDependencies": {
+    "tsx": "4.23.15"
+  }
+}

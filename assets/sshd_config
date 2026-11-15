@@ -1,0 +1,28 @@
+Port 2222
+ListenAddress 0.0.0.0
+ListenAddress ::
+HostKey /var/lib/dev-workspace/ssh/ssh_host_ed25519_key
+PidFile /run/sshd/sshd.pid
+AllowUsers dev
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+AuthorizedKeysFile /var/lib/dev-workspace/ssh/authorized_keys
+StrictModes yes
+AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+GatewayPorts no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+PrintMotd no
+PrintLastLog no
+UseDNS no
+LogLevel VERBOSE
+SetEnv PATH=/home/dev/.local/share/mise/shims:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 STARTOS_USE_PODMAN=1 DOCKER_HOST=unix:///run/dev-workspace-podman/podman.sock CONTAINER_HOST=unix:///run/dev-workspace-podman/podman.sock PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose
+Subsystem sftp internal-sftp

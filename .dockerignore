@@ -1,0 +1,11 @@
+*
+!Dockerfile
+!assets/
+!assets/**
+!.ai-workspace/
+.ai-workspace/*
+!.ai-workspace/bundled-skills/
+!.ai-workspace/bundled-skills/**
+**/__pycache__
+**/*.pyc
+**/*.pyo
