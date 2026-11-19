@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import * as fs from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { i18n } from './i18n'
 import type { types } from '@start9labs/start-sdk'
 import {
@@ -146,12 +150,57 @@ export async function readProjectSource(
   )
 }
 
+export async function protectProjectSource(
+  path = projectSourceFiles.store.path,
+) {
+  const file = await fs
+    .open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+  if (!file) return
+  try {
+    const stat = await file.stat()
+    if (!stat.isFile() || stat.nlink !== 1)
+      throw new Error('Invalid project source settings file.')
+    await file.chmod(0o600)
+  } finally {
+    await file.close()
+  }
+}
+
 export async function saveProjectSource(
-  effects: types.Effects,
+  _effects: types.Effects,
   source: ProjectSource,
   files: ProjectSourceFiles = projectSourceFiles,
 ): Promise<ProjectSource> {
   const validated = sourceSchema.parse(source)
-  await files.store.write(effects, validated)
+  const path = files.store.path
+  const parent = dirname(path)
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  const file = await fs.open(temporary, 'wx', 0o600)
+  try {
+    try {
+      await file.chmod(0o600)
+      await file.writeFile(JSON.stringify(validated))
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await fs.rename(temporary, path)
+    const directory = await fs.open(parent, 'r')
+    try {
+      await directory.sync()
+    } finally {
+      await directory.close()
+    }
+  } finally {
+    await fs.rm(temporary, { force: true })
+  }
   return validated
 }

@@ -60,7 +60,7 @@ RUN case "$TARGETARCH" in \
  && install -m 0755 /tmp/mise/bin/mise /usr/local/bin/mise \
  && rm -rf /tmp/mise /tmp/mise.tar.gz
 
-COPY assets/sshd_config /etc/ssh/sshd_config
+COPY --chmod=644 assets/sshd_config /etc/ssh/sshd_config
 COPY assets/home-defaults/ /usr/local/share/dev-workspace/home-defaults/
 COPY --chmod=755 assets/prepare-workspace.py /usr/local/bin/prepare-workspace
 COPY --chmod=755 assets/nextcloud-workspace.py /usr/local/bin/nextcloud-workspace
@@ -70,13 +70,17 @@ COPY --chmod=755 assets/workspace-podman.py /usr/local/bin/workspace-podman
 COPY --chmod=755 assets/podman-remote.py /usr/local/bin/podman
 COPY --chmod=755 assets/podman-remote.py /usr/local/bin/docker
 COPY --chmod=755 assets/workspace-session.py /usr/local/bin/workspace-session
+COPY --chmod=644 assets/workspace-previews.mjs /usr/local/lib/dev-workspace/workspace-previews.mjs
+COPY --chmod=644 assets/preview-config.mjs /usr/local/lib/dev-workspace/preview-config.mjs
 COPY --chmod=755 assets/workspace-packages.py /usr/local/bin/workspace-packages
 COPY --chmod=755 assets/workspace-package-files.py /usr/local/bin/workspace-package-files
 COPY --chmod=755 assets/startos-target.py /usr/local/bin/startos-target
-COPY .ai-workspace/bundled-skills/ /usr/local/share/dev-workspace/skills/
-COPY assets/START-CLI-LICENSE /usr/local/share/licenses/start-cli/LICENSE
+COPY --chmod=644 SKILL.md /usr/local/share/dev-workspace/skills/startos-server/SKILL.md
+COPY --chmod=644 assets/START-CLI-LICENSE /usr/local/share/licenses/start-cli/LICENSE
 
-RUN rm -f /home/dev/.bashrc /home/dev/.profile /home/dev/.bash_logout
+RUN chmod -R u=rwX,go=rX /usr/local/share/dev-workspace/skills /usr/local/share/dev-workspace/home-defaults \
+ && runuser -u dev -- test -r /usr/local/share/dev-workspace/skills/startos-server/SKILL.md \
+ && rm -f /home/dev/.bashrc /home/dev/.profile /home/dev/.bash_logout
 
 WORKDIR /home/dev
 EXPOSE 2222

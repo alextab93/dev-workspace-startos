@@ -37,6 +37,9 @@ Do not add image-generated SSH host keys. The runtime preparation step creates e
 
 ## Updating package behavior
 
+Keep the explicit `osVersion: '0.4.1'` minimum in the manifest while Web Preview HTTPS detection relies on StartOS forwarding-header policy. SDK `3.1.1` defaults to `0.4.0.2`, which predates HTTP policy on the plaintext connection. StartOS `0.4.1` accepts that SDK's older `addSsl` options and normalizes them to the newer HTTP proxy policy. An SDK upgrade is not needed just to rename those options. Validate actual HTTPS headers, plaintext spoof rejection, dynamic interfaces and retirement on the candidate before accepting native compatibility. The desktop companion separately uses SDK `4.1.0` and requires StartOS `0.4.2`.
+
+
 Keep `README.md` and `instructions.md` aligned with the final actions, volumes, account, authentication policy, and lifecycle behavior.
 
 Preserve existing user shell files and runtime configuration. Apply storage layout or account ownership changes through explicit versioned migrations. If `current.ts` contains a real migration, retain it in a version-named file and include it in the version graph before creating a new current version.
@@ -75,7 +78,9 @@ Serialize helper state mutations and persist consumed poll credentials atomicall
 
 Source changes refuse to orphan pending or unreadable state. Persist cache and account state in `main`, outside shared files and developer-writable home paths. Do not use age-based cleanup that can discard unfinished writes.
 
-Automatic cache cleanup is disabled in this version. Both clean read/write cache files and unfinished edits persist without an eviction policy or size cap. Treat capacity growth as an explicit operational limit. Any future cleanup must prove that pending and malformed recovery state is preserved before removing confirmed clean data.
+Cache maintenance runs every second. The positive `--vfs-cache-max-size` value follows the cache filesystem's total capacity so full-cache writes return an error instead of waiting indefinitely for the bundled rclone 1.60.1-DEV cleaner. Freeing space permits a retry. This is not a reserved budget or hard quota. Clean cache uses the longest supported duration for `--vfs-cache-max-age`, so it does not routinely expire after an hour. Pending writes and uncertain recovery state must remain protected. Treat cache growth as an operational limit and retest failure/recovery before changing these settings or updating rclone.
+
+The current mount presents regular files as `0660`; a successful chmod does not establish executable-bit support. Native isolated checks observed working temporary-file replacement and rename, local watcher events for mounted writes, and an external WebDAV creation becoming readable without a watcher event during a ten-second observation. Symlink creation returned an I/O error, as did an offline npm install requiring a local dependency link; the same install and executable worked in private local storage. Keep binaries, linked dependency trees, virtual environments, databases and container projects on local storage. These are scoped runtime observations, not guarantees for every editor, backend, database or watcher implementation.
 
 Shutdown must stop developer writers before draining uploads, retain unconfirmed writes after timeout, and stop the mount without opening a writable local fallback at `/projects-shared`. A successful save into a local write cache does not establish remote durability. Test actual Nextcloud bytes after upload, connection interruption and recovery, clean restart, wrong credentials, missing folders, source-switch rejection with pending writes, and safe cache preservation after forced termination.
 
@@ -85,16 +90,44 @@ Version 0.4.0 browser-authorization acceptance is recorded separately from the e
 
 Verify behavior through real inputs and observable outcomes. Do not assert SDK call counts, internal method ordering, or generated configuration shape as a substitute for working authentication and persistence.
 
-Run the package's source checks and behavioral suite from the repository root. Build and load the current Dockerfile into the local Docker engine with the runtime suite's expected tag before running the suite:
+Use Node 24 or newer, npm, Python 3, Docker with Buildx, and OpenSSH client tools. Run these commands from a checkout with its tracked bundled skill directory present. Dependency installation and the first image build require network access; the helper checks themselves use only disposable local fixtures.
+
+Install locked dependencies, run the source checks, and build the current Dockerfile. Capture the resulting image ID so runtime checks use that exact build instead of an older tag:
 
 ```sh
+npm ci
 npm run check
+npm run format:check
 npm test
-docker buildx build --load --tag dev-workspace:runtime-test .
-python3 tests/runtime.py
+workspace_test_build=$(mktemp -d)
+docker buildx build --load --tag dev-workspace:runtime-test --iidfile "$workspace_test_build/image-id" .
+workspace_test_image=$(cat "$workspace_test_build/image-id")
+export DEV_WORKSPACE_TEST_IMAGE="$workspace_test_image"
+rm -r "$workspace_test_build"
+npm run test:helpers
+npm run test:runtime
 ```
 
-This builds the local architecture by default. The test suite does not build its image, and an existing tag can refer to older source. Record the image source and exact built image used by each run.
+This builds the local architecture by default. Stop if a command fails. The test runners do not build their image; rebuild after changing the Dockerfile, assets, or bundled skills. Record the source and exact image ID with the results. A foreign-architecture image requires working local emulation and does not establish native acceptance on that architecture.
+
+`test:helpers` runs the package-manager, Nextcloud authorization, Nextcloud file/cache, terminal StartOS-target, and SSH-connection suites in separate disposable Linux containers. The source mount is read-only; no host ports, host engine socket, operator home, or external network are provided. The package suite creates a signed metadata-only S9PK with a temporary signing key, verifies real manifest/hash results, and deletes its fixture state. It needs neither `/fixture.s9pk` nor an existing packaging workspace, server enrollment, provider account, or private validation directory. That archive has no application runtime and must not be installed on StartOS. Manager installation tests fake the external CLI boundary; they do not establish native installation behavior.
+
+To run only selected helper suites against an already built image:
+
+```sh
+python3 tests/containerChecks.py --image "$DEV_WORKSPACE_TEST_IMAGE" packages ssh-connections
+```
+
+The helper runner prints the exact image ID and architecture, returns failure if a suite fails, and removes its owned containers even after a failed run. The existing `test:runtime` suite exercises real SSH, SFTP, forwarding and persistent Docker volumes, with loopback-only host ports and disposable keys. It cleans up its own containers and volumes. Do not run individual root-only helper files directly on a live workspace; use the container runner.
+
+The preview HTTP/WebSocket cases run in `npm test`. Run the browser suite separately so its listener ports do not overlap a simultaneous source test run:
+
+```sh
+npx playwright install chromium
+npm run test:previews:browser
+```
+
+On Linux, install Playwright's documented system dependencies first, using `npx playwright install --with-deps chromium` in the intended test environment. The browser suite creates its own TLS material and application fixtures; it does not require a live StartOS interface. Native interface routing, TLS forwarding and lifecycle still need their own acceptance.
 
 Packaging requires Python 3 and rejects generated Python bytecode under `assets`. Remove those generated cache files before retrying a rejected build. Asset-file changes are package inputs, so changing a preparation script or shell default causes the package to rebuild.
 
@@ -107,6 +140,8 @@ DEV_WORKSPACE_TEST_IMAGE=dev-workspace:verified-local python3 tests/runtime.py
 `npm run test:runtime` invokes the same Python runtime suite and accepts the same environment variables.
 
 Run `npm ci` and `npm test` on Linux to exercise the SDK's real atomic-write behavior. On macOS, SDK file mutation scenarios are explicitly skipped because the SDK uses Linux `flock` and `/proc`. Those skips are outstanding validation, even when the local test command exits successfully.
+
+Run Linux source tests as a regular user so permission-denial cases are exercised. Run `node --import tsx --test tests/dockerBackups.test.ts` as root inside a disposable Linux container to additionally exercise restoration of numeric ownership. The whiteout case also needs permission to create the `0:0` character device and explicitly skips where that is unavailable. These are filesystem-copy checks, not native StartOS backup consistency. Record both runs and their skips separately.
 
 The Node 22 installation and persistence check is opt-in because it downloads an additional runtime. Enable it explicitly when validating that capability:
 
@@ -147,7 +182,17 @@ Building and testing an artifact does not publish it. Follow the user's explicit
 
 ## Podman and S9PK manager acceptance
 
-The engine must remain UID 1000 with subordinate IDs `1001:64535`, fuse-overlayfs storage, and catatonit as PID 1. Clear remote-client environment variables when launching the engine process itself. The workspace CLI connects over the fixed private Unix socket. Test image build, OCI archive export, a full signed S9PK build, project binds, named volume persistence, Compose, published ports, cleanup retention, and private-state isolation on StartOS.
+The active engine path is `assets/workspace-podman.py`, `assets/podman-remote.py`, and the Podman daemon in `startos/main.ts`. The image installs the same remote client wrapper as both `podman` and `docker`. Existing `docker` volume, configuration, action and daemon identifiers remain compatibility names; `tests/docker.test.ts` and `tests/dockerBackups.test.ts` still validate the shipped settings and persistent storage behavior.
+
+`assets/workspace-docker.py`, `assets/runc-nested.py`, and `tests/dockerRuntime.test.py` belong to the earlier rejected rootful Docker implementation. They remain in source for historical reference, are not selected by the current image's `COPY` instructions or active runtime, and are not part of `test:helpers` or `npm test`. Passing that Python suite would not validate Podman. Do not use its BuildKit cache budget, Docker storage report or nested-runc expectations as the current feature contract. The shipped cleanup action prunes age-filtered unused Podman images and retains containers and named volumes; it does not enforce a total storage quota. Future removal of the historical files should be a separate deliberate change.
+
+The engine must remain UID 1000 with fuse-overlayfs storage and catatonit as PID 1. The candidate launcher starts as root only to create a private user and mount namespace, then permanently sets its real, effective and saved UID/GID to 1000 before starting Podman. Clear remote-client environment variables when launching the engine process itself. The workspace CLI connects over the fixed private Unix socket. Test image build, OCI archive export, a full signed S9PK build, project binds, named volume persistence, Compose, published ports, cleanup retention, and private-state isolation on StartOS.
+
+The original rootless mapping covered container IDs 0 through 64535 and could not run Debian APT's group 65534. The candidate preserves container root at outer ID 1000 and IDs 1 through 64535 at outer IDs 1001 through 65535. New container IDs 64536 through 65534 map to outer IDs 1 through 999. Outer ID 0 is never delegated to Podman. The intermediate namespace maps `0:0:1`, `1000:1000:64536` and `65537:1:999`; only its private mount namespace sees subordinate ranges `1001:64535` and `65537:999`. Keep the gap between those ranges: a single merged extent cannot span the parent's discontinuous mapping. The image's original subordinate-ID files stay unchanged outside that namespace.
+
+Do not append the lower range directly to the original `/etc/subuid` and `/etc/subgid`: Podman sorts it ahead of the existing range and changes existing ownership. No recursive ownership rewrite is needed for the candidate's preserved mapping. Verify actual image, container, named-volume and bind-mounted bytes and numeric owners across upgrades. Returning to the old launcher after creating data with the newly supported IDs is not a supported rollback. The isolated x86 launcher checks do not establish an installed upgrade, native ARM behavior or backup/restore acceptance.
+
+Each candidate engine start mounts private tmpfs filesystems at `/run/user/1000` (256 MiB maximum) and `/dev/shm` (64 MiB maximum). These hold transient runtime and lock state; persistent container data stays in `/var/lib/containers`. The private filesystems prevent a restarted PID namespace from inheriting stale pause-process records and lock reservations. These sizes limit those filesystems, not container RAM. Keep `runAsInit` and catatonit so engine shutdown also ends its namespace helpers. Verify an active disposable container is stopped on shutdown, can be started again with its data, and survives a launcher crash as recoverable stored data. Project containers are not automatically restarted by this mechanism.
 
 Keep the package manager in the same mount namespace as SSH and Nextcloud. A temporary SDK exec cannot prove visibility of the live FUSE mount. Scan and stage as UID 1000; keep authorization, catalog, history, and staging root-owned. Accept fixed operations only over a root-only Unix socket. Never use project files as executable instructions for the installer, inherit ambient StartOS credentials, log the server password, or default to bypassing signer trust.
 

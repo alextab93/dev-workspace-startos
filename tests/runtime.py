@@ -156,6 +156,11 @@ class WorkspaceRuntime(unittest.TestCase):
         result = self.ssh('printf "%s\\n" "$STARTOS_USE_PODMAN" "$DOCKER_HOST" "$CONTAINER_HOST" "$PODMAN_COMPOSE_PROVIDER"')
         self.assertEqual(result.stdout, '1\nunix:///run/dev-workspace-podman/podman.sock\nunix:///run/dev-workspace-podman/podman.sock\n/usr/bin/podman-compose\n')
 
+    def test_remote_user_can_read_bundled_startos_skill(self):
+        source = Path(__file__).resolve().parents[1] / 'SKILL.md'
+        result = self.ssh('cat "$HOME/.agents/skills/startos-server/SKILL.md"')
+        self.assertEqual(result.stdout, source.read_text())
+
     def remote_python(self, script, check=True):
         return self.ssh('python3 -c ' + shlex.quote(script), check=check)
 

@@ -155,8 +155,32 @@ def write_private(path, contents):
         os.fsync(output.fileno())
 
 
-def identity_present(directory):
-    path = directory / 'id.key.pem'
+def local_seed():
+    metadata = LOCAL_SEED.parent.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise TargetError('The local StartOS connection information is unavailable.')
+    seed = json_object(read_file(LOCAL_SEED, 140000, 0))
+    if set(seed) != {'version', 'url', 'rootCa', 'restoreGeneration'} or type(seed['version']) is not int or seed['version'] != 1:
+        raise TargetError('The local StartOS connection information is invalid.')
+    generation = seed.get('restoreGeneration')
+    if generation is not None and (not isinstance(generation, str) or re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', generation) is None):
+        raise TargetError('The workspace restore identity state is invalid. Repair service initialization before connecting.')
+    return seed
+
+
+def identity_path(directory, create=False):
+    generation = local_seed().get('restoreGeneration')
+    if generation is not None:
+        namespace = directory / 'identities' / generation
+        for path in (directory / 'identities', namespace):
+            if not os.path.lexists(path) and not create:
+                return namespace / 'id.key.pem'
+            private_directory(path, create)
+        directory = namespace
+    return directory / 'id.key.pem'
+
+
+def identity_present(path):
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -185,12 +209,13 @@ def information(name):
         'url': config['url'],
         'rootCaSha256': config['rootCaSha256'],
         'certificateFingerprints': [hashlib.sha256(ssl.PEM_cert_to_DER_cert(block)).hexdigest() for block in CERTIFICATE.findall(certificate)],
-        'identityPresent': identity_present(directory),
+        'identityPresent': identity_present(identity_path(directory)),
     }
 
 
 def add_target(name, url, certificate):
     name, url, certificate = valid_name(name), valid_url(url), public_ca(certificate)
+    local_seed()
     root = targets_root(True)
     destination = root / name
     config = {'version': 1, 'name': name, 'url': url, 'rootCaSha256': hashlib.sha256(certificate.encode()).hexdigest()}
@@ -221,12 +246,7 @@ def add_target(name, url, certificate):
 
 
 def add_local(name):
-    metadata = LOCAL_SEED.parent.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-        raise TargetError('The local StartOS connection information is unavailable.')
-    seed = json_object(read_file(LOCAL_SEED, 140000, 0))
-    if set(seed) != {'version', 'url', 'rootCa'} or seed['version'] != 1:
-        raise TargetError('The local StartOS connection information is invalid.')
+    seed = local_seed()
     url, certificate = valid_url(seed['url']), public_ca(seed['rootCa'])
     parsed = urllib.parse.urlsplit(url)
     context = ssl.create_default_context(cadata=certificate)
@@ -257,16 +277,18 @@ def command_arguments(arguments):
     return arguments
 
 
-def cli_arguments(name):
+def cli_arguments(name, enrolling=False):
     directory, config, _ = load_target(name)
-    identity_present(directory)
+    key = identity_path(directory, create=enrolling)
+    if not identity_present(key) and not enrolling:
+        raise TargetError('This target needs enrollment for the current workspace. Verify its saved server address, then run startos-target login ' + name + ' from an interactive terminal.')
     for path in (Path.home() / '.startos/config.yaml', Path('/etc/startos/config.yaml'), Path('/run/startos/id.key.pem'), directory / 'developer.key.pem'):
         if os.path.lexists(path):
             raise TargetError('Ambient StartOS configuration or an alternate identity prevents isolated access. Use start-cli directly or a workspace without that configuration.')
     executable = shutil.which('start-cli')
     if executable is None:
         raise TargetError('start-cli is not installed or is unavailable on PATH.')
-    return directory, [executable, '-H', config['url'], '--root-ca', str(directory / 'root-ca.pem'), '--id-key-path', str(directory / 'id.key.pem')]
+    return directory, [executable, '-H', config['url'], '--root-ca', str(directory / 'root-ca.pem'), '--id-key-path', str(key)]
 
 
 def cli_environment():
@@ -311,7 +333,7 @@ def run_command(name, arguments):
 def login(name):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise TargetError('Login requires an interactive terminal. Run startos-target login from your terminal.')
-    directory, command = cli_arguments(name)
+    directory, command = cli_arguments(name, enrolling=True)
     os.chdir(directory)
     os.execve(command[0], command + ['auth', 'login'], cli_environment())
 

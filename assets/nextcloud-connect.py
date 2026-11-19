@@ -113,6 +113,7 @@ def route(value, allowed, expression):
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, new_url):
+        fp.close()
         raise ConnectionError('redirect-rejected', 'Nextcloud redirected the connection. Check its service address settings.')
 
 
@@ -132,7 +133,8 @@ def request(config, url, method='GET', body=None, credentials=None, headers=None
             require(len(result) <= MAX_RESPONSE, 'response-too-large', 'Nextcloud returned too much data for this operation.')
             return response.status, result
     except urllib.error.HTTPError as error:
-        return error.code, b''
+        with error:
+            return error.code, b''
     except (OSError, urllib.error.URLError, ValueError):
         raise ConnectionError('unavailable', 'Nextcloud could not be reached with a trusted HTTPS connection.') from None
 

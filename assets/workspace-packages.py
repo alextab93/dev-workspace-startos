@@ -64,6 +64,32 @@ def private_directory(path):
     path.chmod(0o700)
 
 
+def local_seed():
+    metadata = SEED.parent.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise PackageError('Local StartOS connection information is unavailable.')
+    descriptor = os.open(SEED, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022 or metadata.st_size > 140000:
+            raise PackageError('Local StartOS connection information is invalid.')
+        with os.fdopen(descriptor, 'rb', closefd=False) as source:
+            contents = source.read(140001)
+        if len(contents) > 140000:
+            raise PackageError('Local StartOS connection information is invalid.')
+        seed = json.loads(contents)
+    finally:
+        os.close(descriptor)
+    if not isinstance(seed, dict) or set(seed) != {'version', 'url', 'rootCa', 'restoreGeneration'} or type(seed['version']) is not int or seed['version'] != 1 or not isinstance(seed['rootCa'], str) or not isinstance(seed['url'], str):
+        raise PackageError('Local StartOS connection information is invalid.')
+    generation = seed['restoreGeneration']
+    if generation is not None and (not isinstance(generation, str) or re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', generation) is None):
+        raise PackageError('The workspace restore identity state is invalid. Repair service initialization before connecting.')
+    if not re.fullmatch(r'https://(?:\[[0-9a-fA-F:]+\]|[0-9.]+)(?::[0-9]+)?', seed['url']):
+        raise PackageError('Local StartOS connection information is invalid.')
+    return seed
+
+
 class Manager:
     def __init__(self, state=STATE):
         self.state = state
@@ -88,22 +114,41 @@ class Manager:
     def environment(self):
         return {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(self.state), 'LANG': 'C.UTF-8', 'NO_COLOR': '1'}
 
-    def command(self):
+    def identity_path(self, seed=None, create=False):
+        generation = (seed if seed is not None else local_seed())['restoreGeneration']
+        directory = self.state
+        if generation is not None:
+            directory = self.state / 'identities' / generation
+            for path in (self.state / 'identities', directory):
+                if not os.path.lexists(path) and not create:
+                    return directory / 'id.key.pem'
+                private_directory(path)
+        return directory / 'id.key.pem'
+
+    def identity_present(self, key=None):
+        key = key if key is not None else self.identity_path()
+        try:
+            metadata = key.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+            raise PackageError('The package manager identity must be a private root-owned regular file.')
+        return True
+
+    def command(self, enrolling=False):
         for path in (self.state / '.startos/config.yaml', Path('/etc/startos/config.yaml'), Path('/run/startos/id.key.pem')):
             if os.path.lexists(path):
                 raise PackageError('Ambient StartOS configuration prevents isolated package manager access.')
-        seed = read_json(SEED, None)
-        if not seed or seed.get('version') != 1 or not isinstance(seed.get('rootCa'), str):
-            raise PackageError('Local StartOS connection information is unavailable.')
-        url = seed.get('url', '')
-        if not re.fullmatch(r'https://(?:\[[0-9a-fA-F:]+\]|[0-9.]+)(?::[0-9]+)?', url):
-            raise PackageError('Local StartOS connection information is invalid.')
+        seed = local_seed()
+        key = self.identity_path(seed, create=enrolling)
+        if not self.identity_present(key) and not enrolling:
+            raise PackageError('Connect to StartOS before installing a package. Restored workspaces require a fresh connection.')
         ca = self.state / 'root-ca.pem'
         descriptor, temporary = tempfile.mkstemp(dir=self.state, prefix='.ca-')
         with os.fdopen(descriptor, 'w') as output:
             output.write(seed['rootCa'])
         os.replace(temporary, ca)
-        return [CLI, '-H', url, '--root-ca', str(ca), '--id-key-path', str(self.state / 'id.key.pem')]
+        return [CLI, '-H', seed['url'], '--root-ca', str(ca), '--id-key-path', str(key)]
 
     def run(self, command, timeout=60, environment=None, user=None, output=None):
         options = {'user': user, 'group': user, 'extra_groups': []} if user is not None else {}
@@ -146,12 +191,12 @@ class Manager:
         value = read_json(self.state / 'catalog.json', {'packages': [], 'errors': [], 'truncated': False, 'scannedAt': None})
         installed = {}
         connected = False
-        if (self.state / 'id.key.pem').exists():
-            try:
+        try:
+            if self.identity_present():
                 installed = self.installed()
                 connected = True
-            except (PackageError, subprocess.SubprocessError, ValueError):
-                pass
+        except (PackageError, OSError, subprocess.SubprocessError, ValueError):
+            pass
         architecture = {'AMD64': 'x86_64', 'arm64': 'aarch64'}.get(platform.machine(), platform.machine())
         packages = []
         for item in value['packages']:
@@ -177,7 +222,7 @@ class Manager:
                 raise PackageError('Scan cancelled. The previous catalog was retained.')
             write_json(self.state / 'catalog.json', result)
             self.scan_committed = True
-            self.update(message='Scan complete: ' + str(len(result['packages'])) + ' packages found.' + (' Scan limit reached; results are incomplete.' if result['truncated'] else ''))
+            self.update(message='Scan finished: ' + str(len(result['packages'])) + ' packages found.' + (' Results are incomplete; check Browse S9PK Packages for details.' if result['truncated'] else ''))
 
     def connect(self, password):
         if not isinstance(password, str) or not 1 <= len(password) <= 4096 or '\0' in password:
@@ -185,7 +230,7 @@ class Manager:
         environment = self.environment()
         environment['PASSWORD'] = password
         try:
-            self.run(self.command() + ['auth', 'login'], environment=environment)
+            self.run(self.command(enrolling=True) + ['auth', 'login'], environment=environment)
             self.installed()
         except (PackageError, subprocess.SubprocessError):
             raise PackageError('StartOS authorization failed. Check the server password and connection.') from None
@@ -194,14 +239,15 @@ class Manager:
         self.update(message='StartOS is connected. The server password was not saved.')
 
     def disconnect(self):
-        if (self.state / 'id.key.pem').exists():
+        key = self.identity_path()
+        if self.identity_present(key):
             self.run(self.command() + ['auth', 'logout'])
-            (self.state / 'id.key.pem').unlink()
+            key.unlink()
         self.update(message='The package manager identity was revoked and removed.')
 
     def install(self, item, trust):
-        if not (self.state / 'id.key.pem').exists():
-            raise PackageError('Connect to StartOS before installing a package.')
+        if not self.identity_present():
+            raise PackageError('Connect to StartOS before installing a package. Restored workspaces require a fresh connection.')
         self.installed()
         if shutil.disk_usage(self.state).free < item['size'] + 512 * 1024 ** 2:
             raise PackageError('Insufficient local space to stage this package. At least the package size plus 512 MiB is required.')
@@ -210,7 +256,10 @@ class Manager:
             self.update(message='Copying the selected package to local storage.')
             with path.open('xb') as output:
                 os.fchmod(output.fileno(), 0o600)
-                self.run([FILES, 'stream', item['path']], timeout=3600, user=1000, output=output)
+                try:
+                    self.run([FILES, 'stream', item['path']], timeout=3600, user=1000, output=output)
+                except (PackageError, subprocess.SubprocessError):
+                    raise PackageError('The selected package could not be read. It may have changed, been removed, or its project source is unavailable. Restore source access and run Scan S9PK Packages again.') from None
                 output.flush()
                 os.fsync(output.fileno())
             if path.stat().st_size != item['size']:

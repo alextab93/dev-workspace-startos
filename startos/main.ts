@@ -8,6 +8,8 @@ import { sshConnectionHealth } from './sshConnections'
 import { readDockerConfig } from './docker'
 import { createDockerEngine, dockerSocket } from './dockerEngine'
 import { prepareStartosAccess } from './startosAccess'
+import { previewStateDirectory } from './fileModels/previews.json'
+import { readPreviewRuntime } from './previews'
 
 export const main = sdk.setupMain(async ({ effects }) => {
   const source = await readProjectSource(effects)
@@ -20,6 +22,60 @@ export const main = sdk.setupMain(async ({ effects }) => {
       subcontainer: workspace,
       exec: { command: ['/usr/local/bin/prepare-workspace'], user: 'root' },
       requires: [],
+    })
+    .addDaemon('web-previews', {
+      subcontainer: sdk.SubContainer.of(
+        effects,
+        { imageId: 'workspace' },
+        sdk.Mounts.of().mountVolume({
+          volumeId: 'main',
+          subpath: './previews',
+          mountpoint: previewStateDirectory,
+          readonly: false,
+        }),
+        'web-previews',
+      ),
+      exec: {
+        command: [
+          'node',
+          '/usr/local/lib/dev-workspace/workspace-previews.mjs',
+          'serve',
+        ],
+        user: 'root',
+        sigtermTimeout: 15000,
+      },
+      ready: {
+        display: i18n('Web Previews'),
+        gracePeriod: 15000,
+        fn: async () => {
+          const state = await readPreviewRuntime()
+          if (state?.invalidRecords)
+            return {
+              result: 'failure' as const,
+              message: i18n(
+                'Invalid preview records are closed. Use Remove Invalid Web Previews; valid previews remain available.',
+              ),
+            }
+          return state &&
+            !state.error &&
+            !state.leases.some(
+              (lease) => lease.state === 'listener-unavailable',
+            )
+            ? {
+                result: 'success' as const,
+                message: i18n(
+                  'The preview service is ready. Manage applications in Web Previews actions.',
+                ),
+              }
+            : {
+                result: 'failure' as const,
+                message: i18n(
+                  'Web Previews are unavailable. Check preview configuration and service logs.',
+                ),
+              }
+        },
+      },
+      requires: ['prepare-workspace'],
     })
     .addOneshot('prepare-podman', () =>
       dockerConfig.enabled
@@ -44,7 +100,7 @@ export const main = sdk.setupMain(async ({ effects }) => {
                 '/usr/local/bin/workspace-podman',
                 'serve',
               ],
-              user: 'dev',
+              user: 'root',
               runAsInit: true,
               env: { HOME: '/home/dev', XDG_RUNTIME_DIR: '/run/user/1000' },
               sigtermTimeout: 120000,
@@ -111,9 +167,7 @@ export const main = sdk.setupMain(async ({ effects }) => {
             errorMessage: i18n('SSH is not accepting connections.'),
           }),
       },
-      requires: dockerConfig.enabled
-        ? ['prepare-workspace', 'docker']
-        : ['prepare-workspace'],
+      requires: ['prepare-workspace'],
     })
     .addHealthCheck('ssh-connections', {
       ready: {

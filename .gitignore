@@ -6,9 +6,7 @@ node_modules/
 docker-images
 javascript
 ncc-cache
-!.ai-workspace/
-.ai-workspace/*
-!.ai-workspace/bundled-skills/
+.ai-workspace/
 __pycache__/
 *.pyc
 .startos/

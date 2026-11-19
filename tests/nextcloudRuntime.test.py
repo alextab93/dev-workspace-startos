@@ -1,4 +1,5 @@
 import base64
+import errno
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.parse
 from xml.sax.saxutils import escape
 
@@ -68,6 +70,19 @@ class WebDavBoundary(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        expected = 'Basic ' + base64.b64encode(b'workspace:private-status-fixture').decode()
+        if self.path != '/vfs/stats' or self.headers.get('Authorization') != expected:
+            self.send_error(401)
+            return
+        body = json.dumps({'diskCache': self.server.disk_cache}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_MKCOL(self):
         target = self.server.directory / urllib.parse.unquote(self.path).lstrip('/')
         target.mkdir(parents=True, exist_ok=True)
@@ -117,6 +132,7 @@ class NextcloudRuntime(unittest.TestCase):
         server.directory = self.remote
         server.mode = 'collection'
         server.disclosed = False
+        server.disk_cache = {'uploadsQueued': 0, 'uploadsInProgress': 0, 'outOfSpace': False, 'erroredFiles': 0}
         server.url = 'https://127.0.0.1:' + str(server.server_port)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(self.certificate, self.key)
@@ -371,6 +387,49 @@ class NextcloudRuntime(unittest.TestCase):
                 self.assertTrue(result['uncertain'])
                 self.assertTrue(root.exists())
                 self.assertTrue(metadata.exists() if scenario != 'missing-metadata' else data.exists())
+
+    def running_state(self):
+        self.state.mkdir(mode=0o700)
+        (self.state / 'rc.crt').write_text(self.certificate.read_text())
+        value = {'pid': os.getpid(), 'processIdentity': helper.process_identity(os.getpid()), 'phase': 'ready',
+                 'rcPort': self.server.server_port, 'rcPassword': 'private-status-fixture'}
+        helper.atomic_json(self.state / 'state.json', value)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Live process identity requires Linux procfs')
+    def test_live_status_reports_full_cache_and_recovers_without_changing_saved_bytes(self):
+        root, data, metadata = self.cache_record(dirty=False)
+        self.running_state()
+        before = data.read_bytes(), metadata.read_bytes()
+        original_statvfs = os.statvfs
+        values = list(original_statvfs(self.cache))
+        values[4] = 0
+        exhausted = os.statvfs_result(values)
+        def filesystem(path):
+            return exhausted if Path(path) == self.cache else original_statvfs(path)
+        with patch('os.statvfs', side_effect=filesystem):
+            result = helper.status(self.state, self.cache, self.config_path)
+        self.assertEqual(result, {'ready': False, 'mounted': True, 'pendingUploads': 0, 'uncertain': True,
+                                 'message': 'Nextcloud cache storage is full; free server space. Cached data has been retained.'})
+        recovered = helper.status(self.state, self.cache, self.config_path)
+        self.assertEqual(recovered, {'ready': True, 'mounted': True, 'pendingUploads': 0, 'uncertain': False,
+                                    'message': 'Nextcloud is mounted and no pending cached uploads were found.'})
+        self.assertEqual((data.read_bytes(), metadata.read_bytes()), before)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Live process identity requires Linux procfs')
+    def test_live_status_fails_closed_when_cache_capacity_cannot_be_read(self):
+        root, data, metadata = self.cache_record(dirty=True)
+        self.running_state()
+        before = data.read_bytes(), metadata.read_bytes()
+        original_statvfs = os.statvfs
+        def filesystem(path):
+            if Path(path) == self.cache:
+                raise OSError(errno.EIO, 'Fixture filesystem unavailable')
+            return original_statvfs(path)
+        with patch('os.statvfs', side_effect=filesystem):
+            result = helper.status(self.state, self.cache, self.config_path)
+        self.assertEqual(result, {'ready': False, 'mounted': True, 'pendingUploads': 1, 'uncertain': False,
+                                 'message': 'Nextcloud mount or upload status is unavailable; cached data has been retained.'})
+        self.assertEqual((data.read_bytes(), metadata.read_bytes()), before)
 
     def test_stopped_status_reports_pending_saved_uploads(self):
         self.cache_record()

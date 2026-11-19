@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { syncDockerStorage } from '../startos/backups'
+import { syncStorage } from '../startos/backups'
 
 const linuxRsync =
   process.platform === 'linux' && spawnSync('rsync', ['--version']).status === 0
@@ -26,6 +26,7 @@ test(
     })
     const data = path.join(source, 'volumes', 'database', '_data', 'records')
     await fs.writeFile(data, 'database-persistence-fixture\n', { mode: 0o640 })
+    await fs.chmod(data, 0o640)
     if (process.getuid?.() === 0) await fs.chown(data, 1000, 1000)
     await fs.writeFile(
       path.join(source, 'containers', 'stopped', 'config.v2.json'),
@@ -39,13 +40,13 @@ test(
     assert.equal(spawnSync('mkfifo', [path.join(source, 'fifo')]).status, 0)
     const original = await fs.stat(data)
 
-    await syncDockerStorage(source, backup)
+    await syncStorage(source, backup)
     await fs.mkdir(restored)
     await fs.writeFile(
       path.join(restored, 'stale'),
       'removed only after the source is validated',
     )
-    await syncDockerStorage(backup, restored)
+    await syncStorage(backup, restored)
 
     const restoredData = path.join(
       restored,
@@ -89,7 +90,7 @@ test(
 )
 
 test(
-  'Docker backup preserves whiteout devices and extended attributes across restore',
+  'Docker backup preserves whiteout devices across restore',
   { skip: !linuxRsync },
   async (t) => {
     const directory = await fs.mkdtemp(
@@ -108,6 +109,24 @@ test(
       t.skip('This environment cannot create a character-device whiteout')
       return
     }
+    await syncStorage(source, backup)
+    await syncStorage(backup, restored)
+    const result = await fs.lstat(path.join(restored, 'deleted-file'))
+    assert.equal(result.isCharacterDevice(), true)
+    assert.equal(result.rdev, 0)
+  },
+)
+
+test(
+  'Docker backup preserves extended attributes across restore',
+  { skip: !linuxRsync },
+  async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'docker-xattr-'))
+    t.after(() => fs.rm(directory, { recursive: true, force: true }))
+    const source = path.join(directory, 'source')
+    const backup = path.join(directory, 'backup')
+    const restored = path.join(directory, 'restored')
+    await fs.mkdir(source)
     const regular = path.join(source, 'opaque-directory-marker')
     await fs.writeFile(regular, 'attribute fixture')
     const attributes = spawnSync(
@@ -120,11 +139,8 @@ test(
       { encoding: 'utf8' },
     )
     assert.equal(attributes.status, 0, attributes.stderr)
-    await syncDockerStorage(source, backup)
-    await syncDockerStorage(backup, restored)
-    const result = await fs.lstat(path.join(restored, 'deleted-file'))
-    assert.equal(result.isCharacterDevice(), true)
-    assert.equal(result.rdev, 0)
+    await syncStorage(source, backup)
+    await syncStorage(backup, restored)
     const restoredAttributes = spawnSync(
       'python3',
       [
@@ -151,7 +167,7 @@ test(
     await fs.mkdir(destination)
     await fs.writeFile(path.join(destination, 'keep'), 'existing-backup')
     await assert.rejects(
-      syncDockerStorage(path.join(directory, 'missing'), destination),
+      syncStorage(path.join(directory, 'missing'), destination),
       /source is missing/,
     )
     assert.equal(
@@ -160,16 +176,13 @@ test(
     )
     const source = path.join(directory, 'source')
     await fs.symlink(destination, source)
-    await assert.rejects(
-      syncDockerStorage(source, destination),
-      /source is missing/,
-    )
+    await assert.rejects(syncStorage(source, destination), /source is missing/)
     assert.equal(
       await fs.readFile(path.join(destination, 'keep'), 'utf8'),
       'existing-backup',
     )
     await assert.rejects(
-      syncDockerStorage(destination, destination),
+      syncStorage(destination, destination),
       /separate directories/,
     )
     assert.equal(
@@ -195,12 +208,78 @@ test(
     await fs.writeFile(path.join(outside, 'keep'), 'outside-data')
     await fs.symlink(outside, destination)
     await assert.rejects(
-      syncDockerStorage(source, destination),
+      syncStorage(source, destination),
       /destination is not a directory/,
     )
     assert.equal(
       await fs.readFile(path.join(outside, 'keep'), 'utf8'),
       'outside-data',
+    )
+  },
+)
+
+test(
+  'a repeated Docker backup restores changed bytes with the same length and modification time',
+  { skip: !linuxRsync },
+  async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'docker-repeat-'))
+    t.after(() => fs.rm(root, { recursive: true, force: true }))
+    const source = path.join(root, 'source')
+    const backup = path.join(root, 'backup')
+    const restored = path.join(root, 'restored')
+    await fs.mkdir(source)
+    const record = path.join(source, 'record')
+    const timestamp = new Date('2020-01-01T12:00:00Z')
+    for (const revision of ['first', 'later']) {
+      await fs.writeFile(record, revision)
+      await fs.utimes(record, timestamp, timestamp)
+      await syncStorage(source, backup)
+    }
+    await syncStorage(backup, restored)
+    assert.equal(
+      await fs.readFile(path.join(restored, 'record'), 'utf8'),
+      'later',
+    )
+  },
+)
+
+test(
+  'a repeated backup restores formerly linked files as independent files',
+  { skip: !linuxRsync },
+  async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'docker-links-'))
+    t.after(() => fs.rm(root, { recursive: true, force: true }))
+    const source = path.join(root, 'source')
+    const backup = path.join(root, 'backup')
+    const restored = path.join(root, 'restored')
+    await fs.mkdir(source)
+    await fs.writeFile(path.join(source, 'original'), 'first')
+    for (const name of ['changed', 'identical']) {
+      await fs.link(path.join(source, 'original'), path.join(source, name))
+    }
+    await syncStorage(source, backup)
+    for (const [name, value] of [
+      ['changed', 'later'],
+      ['identical', 'first'],
+    ]) {
+      const file = path.join(source, name)
+      await fs.unlink(file)
+      await fs.writeFile(file, value)
+    }
+    await syncStorage(source, backup)
+    await syncStorage(backup, restored)
+    assert.equal(
+      await fs.readFile(path.join(restored, 'changed'), 'utf8'),
+      'later',
+    )
+    assert.equal(
+      await fs.readFile(path.join(restored, 'identical'), 'utf8'),
+      'first',
+    )
+    await fs.writeFile(path.join(restored, 'identical'), 'independent edit')
+    assert.equal(
+      await fs.readFile(path.join(restored, 'original'), 'utf8'),
+      'first',
     )
   },
 )

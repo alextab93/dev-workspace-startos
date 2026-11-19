@@ -3,11 +3,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { sdk } from './sdk'
 
-export async function syncDockerStorage(
-  source: string,
-  destination: string,
-  progress?: (percent: number) => void,
-): Promise<void> {
+async function validateVolumePaths(source: string, destination: string) {
   const from = path.resolve(source)
   const to = path.resolve(destination)
   if (
@@ -16,29 +12,49 @@ export async function syncDockerStorage(
     to.startsWith(`${from}${path.sep}`)
   ) {
     throw new Error(
-      'Docker backup source and destination must be separate directories.',
+      'Volume backup source and destination must be separate directories.',
     )
   }
   const sourceStat = await fs.lstat(from).catch(() => null)
   if (!sourceStat?.isDirectory() || sourceStat.isSymbolicLink()) {
     throw new Error(
-      'Docker backup source is missing or is not a directory. No destination data was changed.',
+      'Volume backup source is missing or is not a directory. Copy cannot proceed.',
     )
   }
+  const destinationStat = await fs
+    .lstat(to)
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+  if (destinationStat && !destinationStat.isDirectory()) {
+    throw new Error('Volume backup destination is not a directory.')
+  }
+}
+
+export async function syncStorage(
+  source: string,
+  destination: string,
+  progress?: (percent: number) => void,
+  includeDevices = true,
+): Promise<void> {
+  const from = path.resolve(source)
+  const to = path.resolve(destination)
+  await validateVolumePaths(from, to)
   await fs.mkdir(to, { recursive: true })
   const destinationStat = await fs.lstat(to)
   if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) {
-    throw new Error('Docker backup destination is not a directory.')
+    throw new Error('Volume backup destination is not a directory.')
   }
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       'rsync',
       [
-        '-aAXH',
+        includeDevices ? '-aAXH' : '-rlptgoAXH',
+        '--super',
         '--numeric-ids',
+        '--ignore-times',
         '--delete',
-        '--partial',
-        '--inplace',
         '--timeout=300',
         '--info=progress2',
         '--',
@@ -56,7 +72,7 @@ export async function syncDockerStorage(
     })
     child.stderr.resume()
     child.once('error', () => {
-      reject(new Error('Docker storage backup or restore could not start.'))
+      reject(new Error('Volume backup or restore could not start.'))
     })
     child.once('close', (code, signal) => {
       if (code === 0) {
@@ -65,7 +81,7 @@ export async function syncDockerStorage(
       } else {
         reject(
           new Error(
-            `Docker storage backup or restore is incomplete (rsync ${signal ? `signal ${signal}` : `exit ${code}`}).`,
+            `Volume backup or restore is incomplete (rsync ${signal ? `signal ${signal}` : `exit ${code}`}).`,
           ),
         )
       }
@@ -73,21 +89,36 @@ export async function syncDockerStorage(
   })
 }
 
-const dockerData = '/media/startos/volumes/docker'
-const dockerBackup = '/media/startos/backup/volumes/docker'
+const dataRoot = '/media/startos/volumes'
+const backupRoot = '/media/startos/backup/volumes'
+const volumes = ['docker', 'main', 'home'] as const
+
+async function copyVolumes(
+  from: string,
+  to: string,
+  report: (completed: number) => void,
+) {
+  for (const volume of volumes) {
+    await validateVolumePaths(path.join(from, volume), path.join(to, volume))
+  }
+  for (const [index, volume] of volumes.entries()) {
+    await syncStorage(
+      path.join(from, volume),
+      path.join(to, volume),
+      (percent) => report(index * 100 + percent),
+      volume === 'docker',
+    )
+  }
+}
 
 export const { createBackup, restoreInit } = sdk.setupBackups(async () =>
-  sdk.Backups.ofVolumes('main', 'home')
+  sdk.Backups.ofVolumes()
     .setPreBackup(async (_effects, progress) => {
-      progress.setTotal(100)
-      await syncDockerStorage(dockerData, dockerBackup, (percent) =>
-        progress.setDone(percent),
-      )
+      progress.setTotal(volumes.length * 100)
+      await copyVolumes(dataRoot, backupRoot, (n) => progress.setDone(n))
     })
-    .setPostRestore(async (_effects, progress) => {
-      progress.setTotal(100)
-      await syncDockerStorage(dockerBackup, dockerData, (percent) =>
-        progress.setDone(percent),
-      )
+    .setPreRestore(async (_effects, progress) => {
+      progress.setTotal(volumes.length * 100)
+      await copyVolumes(backupRoot, dataRoot, (n) => progress.setDone(n))
     }),
 )

@@ -2,10 +2,7 @@
 !Dockerfile
 !assets/
 !assets/**
-!.ai-workspace/
-.ai-workspace/*
-!.ai-workspace/bundled-skills/
-!.ai-workspace/bundled-skills/**
+!SKILL.md
 **/__pycache__
 **/*.pyc
 **/*.pyo

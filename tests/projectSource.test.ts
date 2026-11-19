@@ -16,6 +16,7 @@ import {
   projectSourceFiles,
   readProjectSource,
   saveProjectSource,
+  protectProjectSource,
   sourceSchema,
   type ProjectSource,
   type ProjectSourceFiles,
@@ -657,3 +658,15 @@ test(
     assert.equal(await fs.readFile(retained, 'utf8'), 'existing project data')
   },
 )
+
+test('restricts new and existing project settings to the service owner', async () => {
+  const files = await filesForTest()
+  await protectProjectSource(files.store.path)
+  await saveProjectSource(effectsBoundary(), { provider: 'none' }, files)
+  assert.equal((await fs.stat(files.store.path)).mode & 0o777, 0o600)
+  const bytes = await fs.readFile(files.store.path)
+  await fs.chmod(files.store.path, 0o644)
+  await protectProjectSource(files.store.path)
+  assert.equal((await fs.stat(files.store.path)).mode & 0o777, 0o600)
+  assert.deepEqual(await fs.readFile(files.store.path), bytes)
+})

@@ -1,21 +1,17 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.5.0:1',
+  version: '0.6.0:9',
   releaseNotes: {
-    en_US:
-      'Set container tooling variables in SSH sessions, add local and shared package scan choices, and allow cancelling scans while retaining the last completed catalog.',
+    en_US: 'Revoke all saved web previews during workspace recovery.',
     es_ES:
-      'Configura las herramientas de contenedores por SSH, permite elegir proyectos locales o compartidos y cancelar búsquedas conservando el último catálogo completo.',
+      'Revoca todas las vistas previas web guardadas al restaurar el espacio de trabajo.',
     de_DE:
-      'Rootless Podman, Container-Speicherübersicht und Image-Bereinigung, Linux-StartOS-Werkzeuge und S9PK-Verwaltung für lokale oder geteilte Projekte.',
+      'Widerruft alle gespeicherten Webvorschauen bei der Wiederherstellung des Arbeitsbereichs.',
     pl_PL:
-      'Podman bez uprawnień roota, podgląd miejsca i czyszczenie obrazów, narzędzia StartOS dla Linux oraz zarządzanie S9PK z projektów lokalnych i współdzielonych.',
+      'Unieważnia wszystkie zapisane podglądy stron podczas przywracania obszaru roboczego.',
     fr_FR:
-      'Ajoute Podman sans privilèges, le suivi du stockage et le nettoyage des images, les outils StartOS Linux et la gestion des S9PK issus des projets locaux ou partagés.',
+      'Révoque tous les aperçus web enregistrés lors de la restauration de l’espace de travail.',
   },
-  migrations: {
-    up: async () => {},
-    down: IMPOSSIBLE,
-  },
+  migrations: { up: async () => {}, down: IMPOSSIBLE },
 })

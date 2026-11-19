@@ -5,6 +5,8 @@ import {
   jobValidator,
   packageLabel,
   packageRequest,
+  packageScanStatistics,
+  packageStatusResult,
   statusValidator,
 } from '../packages'
 
@@ -173,6 +175,15 @@ export const browsePackages = sdk.Action.withoutInput(
         type: 'single',
         value:
           [
+            ...(catalog.scannedAt
+              ? [
+                  packageScanStatistics(
+                    catalog.statistics,
+                    catalog.errors.length,
+                  ),
+                ]
+              : []),
+            ...(catalog.packages.length ? [] : [i18n('No packages found.')]),
             ...catalog.packages.map(
               (item) =>
                 `${packageLabel(item)}\n${i18n('Installed version')}: ${item.installedVersion || i18n('Not available')}\n${i18n('Compatible')}: ${String(item.compatible)}\nSHA256: ${item.sha256}`,
@@ -283,27 +294,6 @@ export const installationStatus = sdk.Action.withoutInput(
     const status = statusValidator.parse(
       await packageRequest(effects, { operation: 'status' }),
     )
-    return {
-      version: '1',
-      title: i18n('Installation Status'),
-      message: status.job
-        ? `${status.job.state}: ${status.job.message}`
-        : i18n('No package operations have run.'),
-      result: {
-        type: 'single',
-        value:
-          status.history
-            .map(
-              (job) =>
-                `${job.finishedAt} | ${job.operation} | ${job.state}\n${job.message}`,
-            )
-            .reverse()
-            .join('\n\n') || i18n('No completed operations.'),
-        masked: false,
-        copyable: true,
-        qr: false,
-        launchable: false,
-      },
-    }
+    return packageStatusResult(status)
   },
 )

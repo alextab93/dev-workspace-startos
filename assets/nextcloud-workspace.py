@@ -336,12 +336,16 @@ def status(state_directory, cache_directory, config_path):
         cache = rc_call(state_directory, state)
         result['mounted'] = True
         result['pendingUploads'] = max(saved['dirtyFiles'], cache['uploadsQueued'] + cache['uploadsInProgress'])
-        result['uncertain'] = saved['uncertain'] or bool(cache.get('outOfSpace')) or bool(cache.get('erroredFiles'))
+        filesystem = os.statvfs(cache_directory)
+        storage_full = filesystem.f_bavail <= 0
+        result['uncertain'] = saved['uncertain'] or storage_full or bool(cache.get('outOfSpace')) or bool(cache.get('erroredFiles'))
         check_remote(load_config(config_path), timeout=5)
         result['ready'] = not result['uncertain']
         result['message'] = 'Nextcloud is mounted; local edits are awaiting upload.' if result['pendingUploads'] else 'Nextcloud is mounted and no pending cached uploads were found.'
         if result['uncertain']:
             result['message'] = 'Nextcloud cache status requires attention; cached data has been retained.'
+        if storage_full:
+            result['message'] = 'Nextcloud cache storage is full; free server space. Cached data has been retained.'
     except WorkspaceError as error:
         result['message'] = str(error)
     except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
@@ -401,6 +405,16 @@ def stop_process(process, timeout=3):
         process.wait(timeout=2)
 
 
+def mount_command(subpath, mountpoint, remote_config, destination, certificate, certificate_key, port):
+    filesystem = os.statvfs(destination)
+    capacity = filesystem.f_frsize * filesystem.f_blocks
+    require(capacity > 0, 'The Nextcloud cache filesystem capacity could not be determined.')
+    return ['rclone', 'mount', 'workspace:' + subpath, str(mountpoint), '--config', str(remote_config), '--cache-dir', str(destination),
+               '--vfs-cache-mode', 'full', '--vfs-cache-poll-interval', '1s', '--vfs-cache-max-size', str(capacity), '--vfs-cache-max-age', str(2 ** 63 - 1) + 'ns', '--vfs-write-back', '1s', '--dir-cache-time', '5s', '--poll-interval', '0',
+               '--uid', '1000', '--gid', '1000', '--file-perms', '0660', '--dir-perms', '0770', '--umask', '0007', '--allow-other', '--default-permissions',
+               '--rc', '--rc-addr', '127.0.0.1:' + str(port), '--rc-cert', str(certificate), '--rc-key', str(certificate_key), '--log-level', 'ERROR']
+
+
 def serve(arguments):
     require(os.geteuid() == 0, 'The Nextcloud workspace supervisor must run as root.')
     os.umask(0o077)
@@ -446,10 +460,7 @@ def serve(arguments):
         port = listener.getsockname()[1]
     state = {'pid': os.getpid(), 'processIdentity': process_identity(os.getpid()), 'key': key, 'phase': 'starting', 'rcPort': port, 'rcPassword': secrets.token_hex(32)}
     atomic_json(arguments.state_dir / 'state.json', state)
-    command = ['rclone', 'mount', 'workspace:' + config['subpath'], str(mountpoint), '--config', str(remote_config), '--cache-dir', str(destination),
-               '--vfs-cache-mode', 'full', '--vfs-cache-poll-interval', '0', '--vfs-write-back', '1s', '--dir-cache-time', '5s', '--poll-interval', '0',
-               '--uid', '1000', '--gid', '1000', '--file-perms', '0660', '--dir-perms', '0770', '--umask', '0007', '--allow-other', '--default-permissions',
-               '--rc', '--rc-addr', '127.0.0.1:' + str(port), '--rc-cert', str(certificate), '--rc-key', str(certificate_key), '--log-level', 'ERROR']
+    command = mount_command(config['subpath'], mountpoint, remote_config, destination, certificate, certificate_key, port)
     if config['rootCa']:
         trust = arguments.state_dir / 'ca.pem'
         trust.write_text(Path('/etc/ssl/certs/ca-certificates.crt').read_text() + '\n' + config['rootCa'])

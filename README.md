@@ -17,6 +17,8 @@ The sections below describe storage, access, lifecycle, and maintenance boundari
 - [File Models](#file-models)
 - [Dependencies](#dependencies)
 - [Network Access and Interfaces](#network-access-and-interfaces)
+- [Browser Desktop Companion](#browser-desktop-companion)
+- [Web Previews](#web-previews)
 - [Installation and First-Run Flow](#installation-and-first-run-flow)
 - [Actions](#actions)
 - [Tasks](#tasks)
@@ -33,7 +35,9 @@ The package runs a workspace subcontainer and, when enabled, a separate rootless
 
 Podman is disabled by default. Its engine runs as UID 1000 under catatonit and receives its own persistent storage, a private Unix socket directory, and `/home/dev/projects`. The development home, SSH host identity, Nextcloud authorization, and package manager credentials are outside its mounts. Every workspace user can control this engine and its project files. It shares the StartOS kernel and is not a virtual machine. Storage uses fuse-overlayfs; nested containers have cgroups disabled, so this package does not promise per-container CPU or memory enforcement.
 
-The image includes Podman, podman-compose, Linux `start-cli` 2.8.0, GitHub CLI, and GnuPG. The `podman` command connects to the workspace engine; a `docker` compatibility command delegates to it. Docker-specific plugins such as Buildx are not supplied. Desktop Dev Containers compatibility requires separate acceptance. SSH sessions select Podman for StartOS packaging with `STARTOS_USE_PODMAN=1`.
+The candidate launcher prepares a private user namespace as root and drops all user/group IDs to 1000 before starting Podman. It preserves the existing ownership mapping for container IDs 0 through 64535 and adds IDs through 65534, including the group required by Debian APT. This does not delegate the outer root identity. An isolated x86 test preserved existing image, container, volume and project-file ownership across the change; an installed-package upgrade and native backup/restore remain separate acceptance checks. Arbitrary IDs above 65534 are unsupported.
+
+The image includes Podman, podman-compose, Linux `start-cli` 2.8.0, GitHub CLI, and GnuPG. The `podman` command connects to the workspace engine; a `docker` compatibility command delegates to it. Podman's `buildx build` compatibility command uses Buildah; the Docker Buildx plugin is not supplied, and `buildx inspect` is unsupported. A native x86 Dev Containers session passed a Compose build, exact file edits, tests, Node debugging, port forwarding, rebuild and reconnect through Remote SSH. This establishes the tested Node configuration, not compatibility with every Docker project. SSH sessions select Podman for StartOS packaging with `STARTOS_USE_PODMAN=1`.
 
 A root-owned package manager runs alongside SSH in the same mount namespace, including the live Nextcloud FUSE mount. Native StartOS actions reach it through a root-only Unix socket. File discovery and copying run as UID 1000; server administration uses a separate root-owned identity outside home and project storage. This identity has server administration authority, not a package-scoped role. The password used to enroll it is not persisted.
 
@@ -53,6 +57,7 @@ Projects and package-managed SSH state use separate persistent volumes. The work
 | `main/docker.json`                    | Package file-model access                | Podman enablement and unused-image cleanup age |
 | `main/packages` | `/var/lib/dev-workspace/packages` | Root-only manager identity, catalog, operation history, and temporary staging |
 | `main/package-runtime` | `/run/dev-workspace-packages` | Root-only manager action socket |
+| `main/previews` | Preview daemon `/var/lib/dev-workspace/previews` | Root-only password hash, temporary leases, expiry history and generated status |
 | `main/store.json`                     | Package file-model access                | Authorized public-key records and package-owned settings                                         |
 | `main/project-source.json`            | Package file-model access                | Shared-folder selection and Nextcloud app password, separate from SSH settings                   |
 | `main/ssh`                            | `/var/lib/dev-workspace/ssh`             | Root-owned authorized-key file and persistent SSH host identity                                  |
@@ -66,7 +71,7 @@ The default project directory is `/home/dev/projects`. Home initialization creat
 
 The optional source is mounted independently at `/projects-shared`. Existing projects are not moved or copied, and the package does not change ownership of provider files. Home, SSH credentials, editor data, and user-installed tools remain in their existing private storage.
 
-Nextcloud read caches and unfinished uploads consume private workspace disk space. This version retains clean and dirty cached files without automatic eviction or a size limit. Plan capacity for that extra storage and do not delete the cache while uploads or recovery are pending.
+Nextcloud read caches and unfinished uploads consume private workspace disk space. Cache maintenance stays enabled so a full cache can report a failed save and recover after space becomes available. Its recovery ceiling uses the cache filesystem's total capacity; this does not reserve free space or enforce a storage quota. Clean files have the longest retention supported by the bundled cache runtime, rather than routine hourly expiry. Pending writes are retained. Plan capacity for cached reads and writes, and do not delete the cache while uploads or recovery are pending.
 
 A FileBrowser source must be an existing relative folder inside FileBrowser Quantum's `data` volume. Configuration checks it through a read-only mount; workspace startup checks write access as UID 1000. Do not rename or delete the selected folder while the workspace starts. A changed directory identity causes startup to fail; see [UPDATING.md](UPDATING.md#external-project-source-contract) for the concurrent-change limitation.
 
@@ -100,9 +105,54 @@ Individual projects may require databases or other services. Configure those as 
 
 The package exposes an SSH API interface with internal port `2222`. Its externally assigned port can differ. Connection information uses the actual available service addresses and port rather than assuming the internal port is reachable directly.
 
-This endpoint accepts the `dev` account and is separate from the StartOS host administration endpoint. There is no browser IDE interface.
+This endpoint accepts the `dev` account and is separate from the StartOS host administration endpoint. The optional Dev Workspace Desktop package provides the browser editor interface described below.
 
 Desktop VS Code forwards development ports through SSH. Temporary application ports do not need their own StartOS interfaces for that workflow. Applications, Git, runtime installers, and package managers may initiate outbound connections using the service's configured outbound route.
+
+## Browser Desktop Companion
+
+Dev Workspace Desktop is a separate StartOS package that streams desktop VS Code to your browser and connects to this workspace through Remote SSH. It has its own password, persistent editor profile, dedicated SSH key and restart lifecycle. Install and configure it separately using its StartOS instructions; this package's SSH interface remains available to desktop clients on your computer.
+
+Use the companion's **Prepare Workspace Key**, authorize that public key here with **Add SSH Key**, then use the companion's **Connect to Dev Workspace** with the host fingerprint from **Connection Information**. Choose Local Projects for container workloads or Shared Projects for the configured provider folder. The companion discovers the workspace address and verifies the pinned host. [Pairing steps](instructions.md#using-the-browser-desktop).
+
+| Work | Where it runs and persists |
+| --- | --- |
+| Desktop application, UI extensions, keyring and pairing key | Dev Workspace Desktop |
+| Remote terminal, project runtimes, language tools and package builds | Dev Workspace and its home storage |
+| Podman engine, container layers and named volumes | Dev Workspace's separate engine storage |
+| Original shared files | The selected Nextcloud or FileBrowser provider |
+
+Opening a folder through Remote SSH supplies workspace tools without another container engine in the desktop. A local desktop window uses the companion's environment. Check the editor's remote indicator and extension location before running project commands. The desktop's forwarded localhost belongs to the companion; use a Web Preview interface to open an application directly from your computer's browser.
+
+Back up the companion, workspace and provider separately. Removing the companion's saved target retains its key; revoke that public key here to prevent new logins. Existing authenticated connections require separate termination. Companion restarts do not restart Dev Workspace, but can disconnect editor sessions.
+
+## Web Previews
+
+The **Web Previews** actions publish temporary HTTP applications through StartOS interfaces. Run the application first, set a preview password once, then choose **Add Web Preview** with a name, application port and duration. The result and **List Web Previews** use actual enabled HTTPS addresses and assigned ports. A listener that has not started is shown as waiting. These actions do not launch or supervise project processes.
+
+On x86 StartOS `0.4.2`, Dev Workspace `0.6.0:2` served previews at their assigned HTTPS addresses. Removing a preview or letting it expire released its interface and port reservations. The running application stayed available inside the workspace. See the [setup instructions](instructions.md#running-and-previewing-projects) for direct-process and Compose examples, the tested [Vite/Rails profile](instructions.md#vite-and-rails-on-one-browser-origin), [development CSP](instructions.md#development-styling-with-a-strict-csp), and [troubleshooting](instructions.md#troubleshooting-previews). Application ports and externally assigned HTTPS ports are distinct.
+
+Dev Workspace requires StartOS `0.4.1` or later. Its preview proxy relies on the OS removing untrusted forwarding headers on plaintext connections and supplying the HTTPS scheme only after TLS termination. StartOS `0.4.1` introduced HTTP proxy policy on both connection paths. SDK `3.1.1` remains pinned; its default OS minimum of `0.4.0.2` is explicitly overridden for this package. Native preview testing on the minimum release, StartOS `0.4.1`, remains pending. [StartOS HTTP proxy change](https://github.com/Start9Labs/start-technologies/blob/start-os/v0.4.1/projects/start-os/release-notes/0.4.1.md)
+
+The proxy runs in a separate subcontainer with only `main/previews` mounted. It targets application ports on `127.0.0.1` in the service network. Direct processes can listen there; a Podman container must publish its internal application port to the corresponding workspace loopback port. The engine still mounts local projects only. Ordinary SSH forwarding remains available independently.
+
+Up to eight previews can run simultaneously. Application ports must be integers from 1024 through 65535, excluding SSH port 2222 and preview listener ports 18080 through 18087. Names are unique ignoring case, use 1 to 60 characters, and cannot contain control characters. Two active previews cannot use the same application port. The default lifetime is one hour, with presets from one minute through 24 hours. Extending measures the chosen duration from now and preserves an existing later expiry.
+
+**Set Web Preview Password** generates a password and displays it once. Only its salted scrypt hash is stored. Each preview requires its own browser sign-in. Password rotation signs out every preview session; restarting the preview daemon also requires signing in again. Access credentials are not placed in the interface URL. App bearer authorization and app cookies are preserved. The preview session cookie is removed before forwarding a request to the app.
+
+The serving boundary checks absolute expiry and a monotonic deadline. It also closes active streaming and WebSocket connections when access expires, is removed, or is revoked. The application continues running. An independent timer checks open connections every 100 milliseconds; runtime acceptance requires both connection types to close within two seconds after expiry. Event-loop scheduling and system load affect the observed closing time. Configuration refresh and binding cleanup are separate from this access check.
+
+Expiry observed by a request or an open connection is recorded independently of scheduled configuration refresh. A clock correction cannot reactivate a recorded expiry. Failed persistence keeps access closed and retains the observed deadline for retry; graceful shutdown completes queued expiry writes. An unreadable configuration, invalid global password state, clock rollback or persistence failure closes preview access and reports an error. Do not delete expiry history to bypass a clock or recovery failure.
+
+A malformed or conflicting individual lease is quarantined while unrelated valid previews remain available. The original record is retained in configuration during subsequent edits, and its access stays closed across proxy restarts. **List Web Previews** and health identify this condition. **Remove Invalid Web Previews** explicitly discards the damaged records; valid previews and application files are preserved. Create a new preview for each affected application after interface cleanup. New allocations wait while damaged records remain, preventing accidental reuse of their old networking settings.
+
+Each preview has its own StartOS host identity. Removing or expiring it retires that host, including custom domains and address choices belonging to the preview. Allocation waits for outstanding retirement so a new preview does not inherit that setup. Removing a preview does not remove the SSH interface. Users control reachability in StartOS Interfaces; neither creating a preview nor its interface type authorizes changes to routers, DNS or tunnels.
+
+The proxy accepts the HTTPS leg and uses StartOS's trusted scheme indication. It strips client forwarding values before sending its own upstream headers. Plain HTTP requests are refused. HTTP requests, redirects, uploads, server-sent events and WebSocket upgrades use the application's root path. Unauthenticated CORS preflight can return only the application's CORS policy; response bodies, app cookies and other headers are withheld, and data requests still require a preview session. The application must implement its own CORS/CSRF policy. Cross-origin browser WebSockets are currently rejected; a frontend and Action Cable endpoint should use the same preview origin until a separately validated policy supports the required split-origin setup.
+
+Different ports are separate browser origins but do not isolate cookies on one hostname. Use distinct application cookie names or separate hostnames for simultaneous apps where needed. Preview-session cookie names are unique per lease; that does not isolate the application's own cookies. This feature shares the workspace's single-owner trust model. [HTTP cookie isolation](https://www.rfc-editor.org/rfc/rfc6265#section-8.5)
+
+`main/previews/config.json` holds leases and the password hash, `expiry.json` retains the observed clock and expired identifiers, and `runtime.json` is generated readiness data. These files are included with `main`. Restore initialization revokes the saved password and removes every restored lease and retains its host identifier for binding cleanup. Set a new password and create fresh previews after restoring. Projects are unchanged.
 
 ## Installation and First-Run Flow
 
@@ -114,17 +164,21 @@ The connection-information action provides the username, usable endpoints, publi
 
 ## Actions
 
+Package-provided action labels and prompts are available in English and Spanish. Manifest descriptions and release notes also include German, Polish and French; those additional locales use English for this package's actions. Diagnostic output from command-line tools can remain in its original language. Dev Workspace Desktop maintains its own translations and instructions.
+
 Key-management actions change access for the shared development account. They update the active key set without restarting the workspace or interrupting existing development processes.
 
 **Configure Containers**, **Container Storage**, and **Clean Containers** manage the rootless Podman engine. Configuration requires the workspace to be stopped. Cleanup requires confirmation and removes unused images older than the configured age, including unused build layers. Containers, named volumes, projects, and Nextcloud uploads are retained. The default age is seven days. There is no total disk quota or automatic cache budget.
 
 The **Packages** action group offers **Connect to StartOS**, **Disconnect from StartOS**, **Scan S9PK Packages**, **Cancel Package Scan**, **Browse S9PK Packages**, **Install S9PK Package**, and **Installation Status**. Server address and CA are discovered from StartOS. The package manager identity is independent of terminal `startos-target` profiles and build signing keys.
 
-Scanning recursively reads the selected source: `/home/dev/projects`, `/projects-shared`, or both. Each completed scan replaces the catalog for that source selection. **Cancel Package Scan** stops only a scan and retains the previous completed catalog. It inspects package metadata and hashes complete files. It skips symlinks, `.git`, `node_modules`, `.venv`, and `venv`, and limits one scan to 2,000 candidate packages, 200,000 directory entries, depth 40, and approximately one hour. Files larger than 32 GiB are rejected. Incomplete scans and unreadable files are reported. Architecture comes from the manifest, not the filename.
+Scanning recursively reads the selected source: `/home/dev/projects`, `/projects-shared`, or both. Each completed scan replaces the catalog for that source selection. **Cancel Package Scan** stops only a scan and retains the previous completed catalog. It inspects package metadata and hashes complete files. It skips symlinks, `.git`, `node_modules`, `.venv`, and `venv`, and limits one scan to 2,000 candidate packages, 200,000 directory entries, 40 directory levels below each project root, and approximately one hour. A deeper subtree is reported as unscanned and the catalog is marked incomplete; other folders continue within the remaining scan limits. Files larger than 32 GiB are rejected. Incomplete scans and unreadable files are reported. Architecture comes from the manifest, not the filename. Browse S9PK Packages reports per-root visited entries, intentionally excluded directories, symlinks and other skipped entries, candidate and valid-package counts, total errors, bytes hashed, hashing time, manifest-inspection time and total elapsed time. Unavailable roots and unreadable directories mark the scan incomplete. Roots not reached before a scan-wide limit are shown as not scanned. At most 100 error details are retained, with the full observed error count shown separately. Counters do not include descendants of excluded or unreadable directories. Timings describe this scan, including cache and transport effects; they are not isolated network latency or a throughput guarantee. Older catalogs remain readable and explicitly lack these measurements.
 
 Installation requires a selected compatible catalog entry and explicit confirmation. The manager copies that artifact to private local storage, verifies its SHA256 against the scan, and invokes authenticated `start-cli package install --sideload`. Trusted signers are required by default. **Allow an Untrusted Signer** applies to one explicitly selected installation; signature and archive integrity checks remain mandatory. Staging files are removed on completion or failure. At least the artifact size plus 512 MiB must be free before staging; StartOS also needs space to install it. The original project file is never removed or modified.
 
-Only one background scan, authorization, or install operation runs at once. The status action shows its phase and the last 30 results. Success requires the server to report the expected installed version. A workspace restart marks an unfinished operation interrupted; verify the target service before retrying. This also applies when upgrading Dev Workspace itself.
+A changed size or SHA256 rejects the selected artifact before installation. If the file disappears, becomes a symlink, or cannot be read from its provider, Installation Status reports a source-read failure and removes the partial staging copy. Restore access to the project source and scan again before explicitly retrying. The previous catalog and unrelated files are retained; failed staging does not install a partial package.
+
+Only one background scan, authorization, or install operation runs at once. The status action shows the latest operation in a copyable multiline panel, with its state, full message, UTC timestamps, and package details when available. An expandable history lists up to 30 earlier results, newest first, without repeating the latest operation. Reopen the action to refresh it. Success requires the server to report the expected installed version. A workspace restart marks an unfinished operation interrupted; verify the target service before retrying. This also applies when upgrading Dev Workspace itself.
 
 - **Add SSH Key** registers a public key and label. Use it for an additional trusted device. Invalid input leaves existing access intact. Adding an already registered key updates its label instead of creating a duplicate entry.
 - **List SSH Keys** returns public fingerprints and labels. It does not reveal private key material.
@@ -159,17 +213,25 @@ A valid empty key set reports loading and directs the user to add a public key. 
 
 With Nextcloud selected, **Nextcloud Project Files** reports mount readiness and pending uploads. A successful editor save can precede the remote upload. Retained dirty or unreadable cache state requires attention; do not delete it to clear the warning.
 
+**Web Previews** reports whether the proxy can persist its state and own the listeners needed by active previews. A listener-port conflict is retried without restarting the workspace. Per-application waiting state is shown by **List Web Previews**; an unavailable application does not request a workspace restart.
+
 Neither listener nor key-configuration health proves that an editor can bootstrap, an extension works, or a project passes its tests. Those outcomes need their own acceptance checks.
 
 ## Backups and Restore
 
-Backups copy the `main`, `home`, and `docker` volumes. This includes repositories and uncommitted files stored in home, editor data, user runtime installations, authorized keys, SSH host identity, and complete Podman storage including named volumes. It also includes credentials stored in home and the separate root-owned package manager identity. Podman images and layers can substantially increase backup size. Database-specific recovery still requires verification.
+The backup declaration includes `main` and `home`, with a separate metadata-preserving copy of the `docker` volume. Its intended contents are repositories and uncommitted files stored in home, editor data, user runtime installations, authorized keys, SSH host identity, and Podman storage including named volumes. It also includes credentials stored in home and the separate root-owned package manager identity. Podman images and layers can substantially increase backup size. On x86_64 StartOS 0.4.2, a backup initiated while Dev Workspace 0.6.0:7 was running completed successfully. After restart, the Git working tree, SSH identity and editor settings matched their pre-backup values. The stopped database container retained its committed SQLite row, and a copy of the live volume passed an integrity check. A separate x86 test backed up a stopped 0.6.0:8 workspace and restored it on the same server under its disposable service ID. Git changes, SSH identity, rootless container data and a committed SQLite row matched the baseline. Desktop VS Code opened the restored project using its newly assigned SSH port.
+
+The workspace rewrites regular files in all three volumes on each backup or restore to preserve changes in both contents and hard links. Allow time for the full volume and temporary space for the largest file being replaced.
 
 The source selection, saved Nextcloud app password, and persistent upload cache are included. Canonical files at `/projects-shared` require the selected provider's own backup. A cache is not a complete backup of Nextcloud files. Restoring a cache can replay pending writes, so coordinate workspace and provider restores. Restoring the workspace does not recreate a missing provider folder. Recover pending uploads before changing the selected source.
 
-StartOS stops the service during backup and restarts it afterward only if it was running before backup. SSH sessions, builds, tmux sessions, language servers, and development applications are interrupted. Unsaved editor buffers and running process state are not part of the backup.
+StartOS documents stopping a service for backup and restarting it only when it was previously running; a stopped service remains stopped. Plan for interrupted SSH sessions, builds, tmux sessions, language servers and applications. This package's engine shutdown, provider upload drain and complete backup ordering still require native verification. Unsaved editor buffers and running process state are not part of the backup. [StartOS backup lifecycle](https://docs.start9.com/start-os/0.4.1.x/backup-create.html).
 
-Restore reuses the saved home and host identity while recreating ephemeral runtime paths. Connection information must be read again because the restored service can have a different address or assigned port. A permanent clone should receive a deliberate identity policy before both copies are used together.
+The restore implementation reuses saved home and SSH identity and recreates ephemeral runtime paths. Read Connection Information again because the address or assigned port can change, then verify files, tools, containers and database records before resuming work. Preview restore initialization revokes the saved preview password and leases; create new previews after recovery. These source behaviors do not establish a successful full native restore.
+
+Restore initialization requires fresh StartOS enrollment for both the package manager and `startos-target`. Use **Connect to StartOS** to authorize the manager against the server currently hosting the workspace. Terminal profiles keep their saved addresses and CAs: review `startos-target info NAME` before login, or run `startos-target add-local restored-server` to verify and save the current server under a new name, then `startos-target login restored-server` in an interactive terminal. Ordinary restarts and updates preserve these logins.
+
+Copied identity keys remain private and inactive in these helpers; they are not revoked on the original server or deleted from the backup. Each restore selects a new identity directory, including when restoring an already restored workspace. Keep the restore isolated until other copied credentials, SSH identity and pending provider uploads have been reviewed. A restored desktop companion similarly retains its pairing key. Its editor profile belongs to its own backup. These guards have separate source tests; complete native restore acceptance remains pending.
 
 No home directories are excluded as caches by this package. Optimize backup size only after confirming which data can be reconstructed. A project's local database needs its own consistency and recovery verification even when its files are inside a backed-up volume.
 
@@ -179,11 +241,17 @@ This is one trusted Linux account. Different SSH keys are different ways to acce
 
 The Nextcloud source uses WebDAV, preserving Nextcloud's processing of file operations. Direct mounts of its internal data directory are unsupported. To show FileBrowser-backed projects in Nextcloud, use its existing FileBrowser External Storage integration. That integration maps the provider tree for the selected Nextcloud users, not just the folder selected in Dev Workspace. Direct edits require index refreshes, and external renames can be treated as deletion and creation rather than preserving file identity. [Nextcloud data-directory guidance](https://docs.nextcloud.com/server/stable/admin_manual/desktop/troubleshooting.html), [package integration](https://github.com/Start9Labs/nextcloud-startos/blob/master/README.md#external-storage), [external change detection](https://docs.nextcloud.com/server/stable/admin_manual/configuration_files/external_storage_configuration_gui.html)
 
-Nextcloud WebDAV does not provide a complete POSIX filesystem: symlinks, hardlinks, executable permission changes, and remote-change file notifications can differ from local storage. Avoid concurrent edits to the same file from multiple clients. Keep virtual environments, package-manager trees requiring symlinks, databases, and other filesystem-sensitive build data in private local storage. Use FileBrowser or private projects for workloads that require ordinary Linux filesystem semantics. [rclone mount limitations](https://rclone.org/commands/rclone_mount/)
+The current Nextcloud mount presents files with mode `0660`. A successful `chmod +x` does not make them executable, and symlink creation fails. A package installation that needs dependency or executable symlinks can therefore fail with an I/O error. Keep runtime installations in private home storage, and put Python virtual environments, linked dependency trees and filesystem-sensitive builds in local projects under `/home/dev/projects`. FileBrowser provides ordinary filesystem access, but container projects still require the private local storage described below.
 
-The optional Podman engine supports local projects at `/home/dev/projects`. Shared provider paths are not mounted into the engine; do not use `/projects-shared` for container bind mounts or Dev Containers. Keep active container projects and database storage on native local storage. Remote SSH followed by Dev Containers avoids requiring a Docker installation on the client computer. Full package builds, cross-architecture builds, native lifecycle, and desktop Dev Containers are separate acceptance requirements. [Remote Docker development](https://code.visualstudio.com/remote/advancedcontainers/develop-remote-host)
+Editor-style temporary-file replacement and rename work through the mounted folder, with uploads completing afterward. Saves through the mount can trigger local file watchers; edits made through another Nextcloud client may become readable after a cache refresh without a watcher event. Reload or use a project-specific polling watcher when needed, and avoid simultaneous edits to the same file from different clients. These behaviors were observed with the packaged rclone 1.60.1-DEV runtime in an isolated WebDAV fixture; they do not guarantee every editor save strategy or remote client. [rclone filesystem and cache behavior](https://rclone.org/commands/rclone_mount/)
+
+Keep active database files on local storage or native database volumes. A successful cached file save does not prove the remote synchronization and locking guarantees a database needs. A simple database test passing on a network filesystem is not evidence of durable database support. [SQLite network-filesystem considerations](https://www.sqlite.org/useovernet.html)
+
+The optional Podman engine supports local projects at `/home/dev/projects`. Shared provider paths are not mounted into the engine; do not use `/projects-shared` for container bind mounts or Dev Containers. Keep active container projects and database storage on native local storage. Remote SSH followed by Dev Containers avoids requiring a Docker installation on the client computer. The tested x86 Node/Compose workflow does not establish other project configurations, ARM Dev Containers, foreign-architecture builds or complete lifecycle recovery. [Remote Docker development](https://code.visualstudio.com/remote/advancedcontainers/develop-remote-host)
 
 The workspace does not automatically restart project applications after package restart, backup, update, or server reboot. tmux can preserve a session across a client disconnect while the service remains running; it does not preserve processes through the StartOS lifecycle.
+
+Native x86 validation retained the same tmux heartbeat process and advancing saved output after normal SSH command exit, forced SSH transport loss, reattachment and desktop-browser closure/reconnection. The [process continuity guide](instructions.md#keeping-a-command-running) distinguishes these client events from a workspace stop or server reboot and gives the manual relaunch procedure. These checks do not establish server reboot or backup/restore acceptance.
 
 Native macOS applications, launchd, Apple frameworks, and platform-specific provider tests still need their native execution environment. Linux availability also does not guarantee that every extension or native dependency supports every packaged CPU architecture.
 
@@ -197,7 +265,7 @@ This summary identifies the package's operating surface. Runtime versions and im
 package_id: dev-workspace
 image: ./Dockerfile
 architectures: [x86_64, aarch64]
-subcontainers: [workspace, optional-workspace-podman]
+subcontainers: [workspace, optional-workspace-podman, web-previews]
 userspace_filesystems: true
 virtual_networking: true
 volumes:
@@ -210,6 +278,7 @@ volume_mounts:
   main/podman-runtime: /run/dev-workspace-podman
   main/packages: /var/lib/dev-workspace/packages
   main/package-runtime: /run/dev-workspace-packages
+  main/previews: /var/lib/dev-workspace/previews in preview daemon
   home/projects: /home/dev/projects in engine
 package_only_files:
   - main/store.json
@@ -219,6 +288,8 @@ file_models:
   - store.json
   - project-source.json
   - docker.json
+  - previews/config.json
+  - previews/runtime.json
   - ssh/authorized_keys
   - ssh/ssh_host_ed25519_key
 startos_managed_env_vars: []
@@ -239,7 +310,14 @@ dependencies:
     mountpoint: /projects-shared
 interfaces:
   ssh: { type: api, port: 2222 }
+  previews: { type: ui, internal_ports: '18080-18087', protocol: http, access: HTTPS }
 actions:
+  - set-preview-password
+  - add-web-preview
+  - list-web-previews
+  - extend-web-preview
+  - remove-web-preview
+  - remove-invalid-web-previews
   - connection-info
   - configure-docker
   - docker-storage
@@ -266,5 +344,5 @@ stopped_only_actions:
   - set-project-source
 tasks:
   - { action: add-ssh-key, severity: important }
-health_checks: [ssh, docker, ssh-connections, nextcloud, ssh-keys]
+health_checks: [ssh, docker, web-previews, ssh-connections, nextcloud, ssh-keys]
 ```

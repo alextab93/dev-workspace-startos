@@ -11,10 +11,13 @@
     "check": "tsc --noEmit && node node_modules/@start9labs/start-sdk/lint.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:runtime": "python3 tests/runtime.py",
-    "format": "prettier --write startos tests/*.ts",
-    "format:check": "prettier --check startos tests/*.ts"
+    "test:helpers": "python3 tests/containerChecks.py",
+    "test:previews:browser": "node --test tests/previewsBrowser.mjs",
+    "format": "prettier --write startos tests/*.ts assets/workspace-previews.mjs assets/preview-config.mjs assets/preview-config.d.mts tests/previewsBrowser.mjs tests/packageFixture.cjs",
+    "format:check": "prettier --check startos tests/*.ts assets/workspace-previews.mjs assets/preview-config.mjs assets/preview-config.d.mts tests/previewsBrowser.mjs tests/packageFixture.cjs"
   },
   "devDependencies": {
+    "playwright": "1.65.1",
     "tsx": "4.23.15"
   }
 }

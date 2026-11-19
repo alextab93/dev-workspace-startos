@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +96,7 @@ class StartosTarget(unittest.TestCase):
         self.targets = self.directory / 'config/dev-workspace/startos/targets'
         self.server.response_status = 200
         self.addCleanup(SEED.unlink, missing_ok=True)
+        self.seed()
 
     def command(self, *arguments, input=None, environment=None):
         return subprocess.run([sys.executable, str(HELPER), *arguments], input=input, capture_output=True, text=True, env=environment or self.environment, timeout=10)
@@ -113,14 +115,15 @@ class StartosTarget(unittest.TestCase):
         return key
 
     def seed(self, **changes):
-        value = {'version': 1, 'url': self.url, 'rootCa': self.ca.read_text()}
+        value = {'version': 1, 'url': self.url, 'rootCa': self.ca.read_text(), 'restoreGeneration': None}
         value.update(changes)
         SEED.write_text(json.dumps(value))
         SEED.chmod(0o644)
 
-    def terminal(self, arguments, password=None):
+    def terminal(self, arguments, password=None, user=None, environment=None):
         master, slave = pty.openpty()
-        process = subprocess.Popen([sys.executable, str(HELPER), *arguments], stdin=slave, stdout=slave, stderr=slave, env=self.environment, start_new_session=True)
+        identity = {'user': user, 'group': user, 'extra_groups': []} if user is not None else {}
+        process = subprocess.Popen([sys.executable, str(HELPER), *arguments], stdin=slave, stdout=slave, stderr=slave, env=environment or self.environment, start_new_session=True, **identity)
         os.close(slave)
         output = bytearray()
         submitted = False
@@ -303,6 +306,69 @@ class StartosTarget(unittest.TestCase):
         self.assertIn('prevents isolated access', response.stderr)
         self.assertEqual(configuration.read_text(), 'insecure: true\n')
 
+    def test_restore_requires_new_interactive_enrollment_and_preserves_copied_keys(self):
+        old_key = self.enrolled()
+        original = old_key.read_bytes()
+        generation = str(uuid.uuid4())
+        self.seed(restoreGeneration=generation)
+        restored = json.loads(self.command('info', 'alpha').stdout)
+        self.assertFalse(restored['identityPresent'])
+        denied = self.command('run', 'alpha', 'package', 'list')
+        self.assertEqual(denied.returncode, 1)
+        self.assertIn('startos-target login alpha', denied.stderr)
+        self.assertEqual(denied.stdout, '')
+        code, output = self.terminal(['login', 'alpha'], password='fixture-password')
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('fixture-password', output)
+        key = self.targets / 'alpha/identities' / generation / 'id.key.pem'
+        self.assertEqual(key.read_bytes(), original)
+        self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(key.parent.stat().st_mode), 0o700)
+        self.assertTrue(json.loads(self.command('info', 'alpha').stdout)['identityPresent'])
+        self.seed(restoreGeneration=generation)
+        response = self.command('run', 'alpha', 'package', 'list')
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.assertEqual(json.loads(response.stdout), {'server': 'https://alpha.example', 'authenticated': True})
+        self.seed(restoreGeneration=str(uuid.uuid4()))
+        self.assertFalse(json.loads(self.command('info', 'alpha').stdout)['identityPresent'])
+        self.assertEqual(self.command('run', 'alpha', 'package', 'list').returncode, 1)
+        self.assertEqual(old_key.read_bytes(), original)
+        self.assertEqual(key.read_bytes(), original)
+
+    def test_missing_invalid_or_mutable_restore_seed_never_uses_copied_identity(self):
+        key = self.enrolled()
+        original = key.read_bytes()
+        for generation in ['', '../old', [], 1, '00000000-0000-0000-0000-000000000000']:
+            self.seed(restoreGeneration=generation)
+            response = self.command('run', 'alpha', 'package', 'list')
+            self.assertEqual(response.returncode, 1)
+            self.assertEqual(response.stdout, '')
+            self.assertEqual(key.read_bytes(), original)
+        self.seed()
+        value = json.loads(SEED.read_text())
+        del value['restoreGeneration']
+        SEED.write_text(json.dumps(value))
+        self.assertEqual(self.command('run', 'alpha', 'package', 'list').returncode, 1)
+        self.seed()
+        SEED.chmod(0o666)
+        self.assertEqual(self.command('run', 'alpha', 'package', 'list').returncode, 1)
+        SEED.unlink()
+        self.assertEqual(self.command('run', 'alpha', 'package', 'list').returncode, 1)
+        self.assertEqual(key.read_bytes(), original)
+
+    def test_restore_identity_symlink_cannot_reactivate_original_key(self):
+        key = self.enrolled()
+        original = key.read_bytes()
+        generation = str(uuid.uuid4())
+        self.seed(restoreGeneration=generation)
+        identities = self.targets / 'alpha/identities'
+        identities.mkdir(mode=0o700)
+        (identities / generation).symlink_to(key.parent, target_is_directory=True)
+        response = self.command('run', 'alpha', 'package', 'list')
+        self.assertEqual(response.returncode, 1)
+        self.assertEqual(response.stdout, '')
+        self.assertEqual(key.read_bytes(), original)
+
     def test_add_local_verifies_https_and_stores_no_identity(self):
         self.seed()
         response = self.command('add-local')
@@ -313,12 +379,13 @@ class StartosTarget(unittest.TestCase):
         self.assertFalse(value['identityPresent'])
 
     def test_normal_development_user_can_save_the_root_provided_local_target(self):
-        self.seed()
+        generation = str(uuid.uuid4())
+        self.seed(restoreGeneration=generation)
         self.directory.chmod(0o755)
         user_directory = self.directory / 'normal-user'
         user_directory.mkdir(mode=0o700)
         os.chown(user_directory, 1000, 1000)
-        environment = dict(self.environment, XDG_CONFIG_HOME=str(user_directory / 'config'))
+        environment = dict(self.environment, HOME=str(user_directory), XDG_CONFIG_HOME=str(user_directory / 'config'))
         response = subprocess.run([sys.executable, str(HELPER), 'add-local'], capture_output=True, text=True, env=environment, user=1000, group=1000, extra_groups=[], timeout=10)
         self.assertEqual(response.returncode, 0, response.stderr)
         self.assertEqual(json.loads(response.stdout)['url'], self.url)
@@ -326,6 +393,16 @@ class StartosTarget(unittest.TestCase):
         self.assertEqual((target / 'config.json').stat().st_uid, 1000)
         self.assertEqual(stat.S_IMODE((target / 'config.json').stat().st_mode), 0o600)
         self.assertFalse((target / 'id.key.pem').exists())
+        code, output = self.terminal(['login', 'local-server'], password='fixture-password', user=1000, environment=environment)
+        self.assertEqual(code, 0, output)
+        key = target / 'identities' / generation / 'id.key.pem'
+        self.assertEqual(key.read_text(), 'fixture-identity:' + self.url)
+        self.assertEqual(key.stat().st_uid, 1000)
+        self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(key.parent.stat().st_mode), 0o700)
+        response = subprocess.run([sys.executable, str(HELPER), 'run', 'local-server', 'package', 'list'], capture_output=True, text=True, env=environment, user=1000, group=1000, extra_groups=[], timeout=10)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.assertEqual(json.loads(response.stdout), {'server': self.url, 'authenticated': True})
 
     def test_add_local_rejects_untrusted_certificate_redirect_and_mutable_seed(self):
         self.seed(rootCa=self.other_ca.read_text())

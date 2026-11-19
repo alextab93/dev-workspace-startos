@@ -14,6 +14,7 @@ ROOTS = ('/projects-shared', '/home/dev/projects')
 MAX_SIZE = 32 * 1024 ** 3
 MAX_FILES = 2000
 MAX_ENTRIES = 200000
+MAX_DEPTH = 40
 
 
 def open_project_file(filename):
@@ -44,16 +45,29 @@ def identity(metadata):
     return [metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns]
 
 
-def inspect_file(filename):
+def inspect_file(filename, statistics=None):
     descriptor = open_project_file(filename)
     try:
         before = identity(os.fstat(descriptor))
         digest = hashlib.sha256()
-        while data := os.read(descriptor, 1024 * 1024):
-            digest.update(data)
-        result = subprocess.run(['/usr/local/bin/start-cli', 's9pk', 'inspect', '/proc/self/fd/' + str(descriptor), 'manifest', '--format', 'json'],
-                                pass_fds=(descriptor,), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
-                                cwd='/tmp', env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/tmp', 'LANG': 'C.UTF-8'})
+        hashing_started = time.monotonic()
+        hashed_bytes = 0
+        try:
+            while data := os.read(descriptor, 1024 * 1024):
+                digest.update(data)
+                hashed_bytes += len(data)
+        finally:
+            if statistics is not None:
+                statistics['hashedBytes'] += hashed_bytes
+                statistics['hashingSeconds'] += time.monotonic() - hashing_started
+        inspection_started = time.monotonic()
+        try:
+            result = subprocess.run(['/usr/local/bin/start-cli', 's9pk', 'inspect', '/proc/self/fd/' + str(descriptor), 'manifest', '--format', 'json'],
+                                    pass_fds=(descriptor,), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+                                    cwd='/tmp', env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/tmp', 'LANG': 'C.UTF-8'})
+        finally:
+            if statistics is not None:
+                statistics['inspectionSeconds'] += time.monotonic() - inspection_started
         if result.returncode or len(result.stdout) > 2 * 1024 * 1024:
             raise ValueError('Invalid or unreadable S9PK manifest.')
         manifest = json.loads(result.stdout)
@@ -74,37 +88,97 @@ def inspect_file(filename):
 def scan(roots=None):
     packages, errors = [], []
     entries, candidates = 0, 0
-    deadline = time.monotonic() + 3600
+    started = time.monotonic()
+    deadline = started + 3600
     truncated = False
-    for root in ROOTS if roots is None else roots:
-        if not Path(root).exists():
-            continue
-        stack = [Path(root)]
-        while stack:
-            directory = stack.pop()
-            try:
-                with os.scandir(directory) as contents:
-                    for entry in contents:
-                        entries += 1
-                        if entries > MAX_ENTRIES or candidates >= MAX_FILES or time.monotonic() > deadline:
-                            truncated = True
-                            break
-                        if entry.is_dir(follow_symlinks=False):
-                            if entry.name not in ('.git', 'node_modules', '.venv', 'venv') and len(Path(entry.path).parts) < 40:
-                                stack.append(Path(entry.path))
-                        elif entry.name.lower().endswith('.s9pk') and entry.is_file(follow_symlinks=False):
-                            candidates += 1
-                            try:
-                                packages.append(inspect_file(entry.path))
-                            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-                                errors.append({'path': entry.path, 'error': str(error)[:300]})
-            except OSError:
-                errors.append({'path': str(directory), 'error': 'Directory could not be read.'})
-            if truncated:
-                break
-        if truncated:
+    exhausted = False
+    limits = set()
+    statistics = {
+        'roots': [
+            {'path': str(root), 'status': 'not-scanned', 'durationSeconds': 0,
+             'entriesVisited': 0, 'directoriesSkipped': 0, 'symlinksSkipped': 0,
+             'otherEntriesSkipped': 0, 'candidates': 0, 'packagesFound': 0, 'errors': 0,
+             'hashedBytes': 0, 'hashingSeconds': 0, 'inspectionSeconds': 0}
+            for root in (ROOTS if roots is None else roots)
+        ],
+    }
+
+    def report_error(root_statistics, path, message):
+        root_statistics['errors'] += 1
+        if len(errors) < 100:
+            errors.append({'path': str(path), 'error': message[:300]})
+
+    for root_statistics in statistics['roots']:
+        if exhausted:
             break
-    return {'packages': packages, 'errors': errors[:100], 'truncated': truncated}
+        root = Path(root_statistics['path'])
+        root_started = time.monotonic()
+        root_statistics['status'] = 'complete'
+        try:
+            try:
+                available = root.is_dir() and not root.is_symlink()
+            except OSError:
+                available = False
+            if not available:
+                root_statistics['status'] = 'unavailable'
+                truncated = True
+                report_error(root_statistics, root, 'Project directory is unavailable; it was not scanned.')
+                continue
+            stack = [(root, 0)]
+            while stack:
+                directory, depth = stack.pop()
+                try:
+                    with os.scandir(directory) as contents:
+                        for entry in contents:
+                            limit = ('entries' if entries >= MAX_ENTRIES else
+                                     'packages' if candidates >= MAX_FILES else
+                                     'time' if time.monotonic() > deadline else None)
+                            if limit:
+                                limits.add(limit)
+                                truncated = True
+                                exhausted = True
+                                root_statistics['status'] = 'incomplete'
+                                break
+                            entries += 1
+                            root_statistics['entriesVisited'] += 1
+                            try:
+                                if entry.is_symlink():
+                                    root_statistics['symlinksSkipped'] += 1
+                                elif entry.is_dir(follow_symlinks=False):
+                                    if entry.name in ('.git', 'node_modules', '.venv', 'venv'):
+                                        root_statistics['directoriesSkipped'] += 1
+                                    elif depth >= MAX_DEPTH:
+                                        limits.add('depth')
+                                        truncated = True
+                                        root_statistics['status'] = 'incomplete'
+                                        report_error(root_statistics, entry.path, 'Directory depth limit reached; subtree was not scanned.')
+                                    else:
+                                        stack.append((Path(entry.path), depth + 1))
+                                elif entry.name.lower().endswith('.s9pk') and entry.is_file(follow_symlinks=False):
+                                    candidates += 1
+                                    root_statistics['candidates'] += 1
+                                    try:
+                                        packages.append(inspect_file(entry.path, root_statistics))
+                                        root_statistics['packagesFound'] += 1
+                                    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                                        report_error(root_statistics, entry.path, str(error))
+                                else:
+                                    root_statistics['otherEntriesSkipped'] += 1
+                            except OSError:
+                                truncated = True
+                                root_statistics['status'] = 'incomplete'
+                                report_error(root_statistics, entry.path, 'Directory entry could not be read.')
+                except OSError:
+                    truncated = True
+                    root_statistics['status'] = 'incomplete'
+                    report_error(root_statistics, directory, 'Directory could not be read.')
+                if exhausted:
+                    break
+        finally:
+            root_statistics['durationSeconds'] = time.monotonic() - root_started
+    statistics['durationSeconds'] = time.monotonic() - started
+    statistics['limitsReached'] = sorted(limits)
+    return {'packages': packages, 'errors': errors, 'truncated': truncated, 'statistics': statistics}
 
 
 def stream(filename):

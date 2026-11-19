@@ -218,6 +218,7 @@ test(
       await fs.readFile(files.authorized.path, 'utf8'),
       renderKeys([secondKey]),
     )
+    await eventually(() => observed.error === undefined)
     assert.equal(observed.error, undefined)
   },
 )

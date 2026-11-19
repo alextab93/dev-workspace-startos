@@ -39,6 +39,8 @@ startos-target login another-server
 
 Do not assume a desktop's `.local` hostname resolves inside the workspace. Never disable certificate verification. Existing target names cannot be silently redirected to a different URL or CA; choose a new target when the connection identity changes.
 
+After a workspace restore, saved profiles retain their addresses and public CAs, but copied identities are inactive in `startos-target`. Review the target before requesting interactive enrollment. To reach the server hosting the restored workspace, use `startos-target add-local restored-server`, inspect its public metadata, then ask the user to run `startos-target login restored-server` in a terminal. Do not reuse an old key manually to bypass this requirement. Ordinary restarts and updates retain the selected identity. Copied keys are not remotely revoked; other credentials and companion pairing need their own recovery review.
+
 ## Working with a target
 
 Start with read-only inspection. Discover commands with `startos-target run TARGET --help` or `startos-target run TARGET package --help`. Confirm actual package IDs, service state and relevant bindings before proposing a change. Use structured JSON output where supported. Do not dump private database data or credentials to troubleshoot routine status questions.

@@ -13,6 +13,14 @@ import { connectionInfo } from './connectionInfo'
 import { setProjectSource } from './projectSource'
 import { configureDocker, dockerStorage, cleanDocker } from './docker'
 import {
+  addPreview,
+  configurePreviewPassword,
+  extendPreview,
+  listPreviews,
+  removePreview,
+  removeInvalidPreviews,
+} from './previews'
+import {
   connectNextcloud,
   chooseNextcloudFolder,
   cancelNextcloudSetup,
@@ -30,6 +38,12 @@ export const actions = sdk.Actions.of()
   .addAction(configureDocker)
   .addAction(dockerStorage)
   .addAction(cleanDocker)
+  .addAction(configurePreviewPassword)
+  .addAction(addPreview)
+  .addAction(listPreviews)
+  .addAction(extendPreview)
+  .addAction(removePreview)
+  .addAction(removeInvalidPreviews)
 
   .addAction(connectStartos)
   .addAction(disconnectStartos)
