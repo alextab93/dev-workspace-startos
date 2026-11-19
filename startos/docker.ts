@@ -71,7 +71,29 @@ export const cleanupValidator = z.object({
   output: z.string().max(65536),
 })
 
-export async function runDockerClient(effects: T.Effects, args: string[]) {
+function podmanRuntimeMount() {
+  return sdk.Mounts.of().mountVolume({
+    volumeId: 'main',
+    subpath: './podman-runtime',
+    mountpoint: '/run/dev-workspace-podman',
+    readonly: false,
+  })
+}
+
+export function composeMounts() {
+  return podmanRuntimeMount().mountVolume({
+    volumeId: 'home',
+    subpath: './projects',
+    mountpoint: '/home/dev/projects',
+    readonly: false,
+  })
+}
+
+export async function runContainerTool(
+  effects: T.Effects,
+  args: string[],
+  compose = false,
+) {
   const config = await readDockerConfig()
   if (!config.enabled)
     throw new Error(
@@ -82,17 +104,34 @@ export async function runDockerClient(effects: T.Effects, args: string[]) {
   return sdk.SubContainer.withTemp(
     effects,
     { imageId: 'workspace' },
-    sdk.Mounts.of().mountVolume({
-      volumeId: 'main',
-      subpath: './podman-runtime',
-      mountpoint: '/run/dev-workspace-podman',
-      readonly: false,
-    }),
+    compose
+      ? composeMounts()
+      : podmanRuntimeMount()
+          .mountVolume({
+            volumeId: 'docker',
+            subpath: null,
+            mountpoint: '/var/lib/containers',
+            readonly: true,
+          })
+          .mountVolume({
+            volumeId: 'main',
+            subpath: './nextcloud-cache',
+            mountpoint: '/var/lib/dev-workspace/nextcloud-cache',
+            readonly: true,
+          }),
     'podman-client',
     async (client) => {
       const result = await client.exec(
-        ['/usr/local/bin/workspace-podman', ...args],
-        { user: 'dev', timeout: 630000 },
+        [
+          compose
+            ? '/usr/local/bin/workspace-compose'
+            : '/usr/local/bin/workspace-podman',
+          ...args,
+        ],
+        {
+          user: !compose && args[0] === 'status' ? 'root' : 'dev',
+          timeout: 630000,
+        },
       )
       if (result.exitCode !== 0)
         throw new Error(
@@ -100,7 +139,11 @@ export async function runDockerClient(effects: T.Effects, args: string[]) {
             'The Podman operation failed. Check the service logs and engine status.',
           ),
         )
-      return JSON.parse(String(result.stdout))
+      return String(result.stdout).trim()
     },
   )
+}
+
+export async function runDockerClient(effects: T.Effects, args: string[]) {
+  return JSON.parse(await runContainerTool(effects, args))
 }

@@ -11,7 +11,13 @@ import {
 import { addSshKey, listSshKeys, removeSshKey } from './sshKeys'
 import { connectionInfo } from './connectionInfo'
 import { setProjectSource } from './projectSource'
-import { configureDocker, dockerStorage, cleanDocker } from './docker'
+import {
+  configureDocker,
+  dockerStorage,
+  cleanDocker,
+  registerCompose,
+  manageCompose,
+} from './docker'
 import {
   addPreview,
   configurePreviewPassword,
@@ -38,6 +44,8 @@ export const actions = sdk.Actions.of()
   .addAction(configureDocker)
   .addAction(dockerStorage)
   .addAction(cleanDocker)
+  .addAction(registerCompose)
+  .addAction(manageCompose)
   .addAction(configurePreviewPassword)
   .addAction(addPreview)
   .addAction(listPreviews)

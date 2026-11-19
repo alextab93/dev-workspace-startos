@@ -2,6 +2,23 @@ import type { LangDict } from './default'
 
 export default {
   es_ES: {
+    334: 'Registrar proyecto Compose',
+    335: 'Guarda un proyecto local o actualiza su preferencia de inicio.',
+    336: 'Nombre permanente del proyecto',
+    337: 'Directorio relativo a /home/dev/projects',
+    338: 'Archivo Compose relativo a ese directorio',
+    339: 'Iniciar con Dev Workspace',
+    340: 'Administrar proyecto Compose',
+    341: 'Detener el proyecto conserva los volúmenes y la preferencia de inicio. Consulta los registros recientes por SSH con workspace-compose logs NOMBRE.',
+    342: 'Operación',
+    343: 'Listar proyectos',
+    344: 'Iniciar',
+    345: 'Detener',
+    346: 'Estado de los servicios',
+    347: 'Anular el registro del proyecto detenido',
+    348: 'No hay proyectos registrados.',
+    370: 'Mostrar un aviso en Almacenamiento de contenedores si quedan menos GiB de los indicados (0 desactiva el aviso)',
+    371: 'Limpiar las imágenes sin uso cada semana',
     320: 'Tiempo restante: ${hours} h ${minutes} min ${seconds} s.',
     321: 'Vuelve a abrir Listar vistas previas web para actualizar el tiempo restante.',
     307: 'Completado',

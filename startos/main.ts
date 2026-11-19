@@ -5,7 +5,7 @@ import { getKeyStatus } from './keyState'
 import { readProjectSource } from './projectSource'
 import { createWorkspace, nextcloudConfigPath } from './projectSourceMount'
 import { sshConnectionHealth } from './sshConnections'
-import { readDockerConfig } from './docker'
+import { composeMounts, readDockerConfig } from './docker'
 import { createDockerEngine, dockerSocket } from './dockerEngine'
 import { prepareStartosAccess } from './startosAccess'
 import { previewStateDirectory } from './fileModels/previews.json'
@@ -99,6 +99,13 @@ export const main = sdk.setupMain(async ({ effects }) => {
                 '--',
                 '/usr/local/bin/workspace-podman',
                 'serve',
+                ...(dockerConfig.weeklyCleanup
+                  ? [
+                      '--weekly',
+                      '--older-than-hours',
+                      String(dockerConfig.cleanupAgeHours),
+                    ]
+                  : []),
               ],
               user: 'root',
               runAsInit: true,
@@ -139,6 +146,23 @@ export const main = sdk.setupMain(async ({ effects }) => {
           }
         : null,
     )
+    .addOneshot('start-compose-projects', () =>
+      dockerConfig.enabled
+        ? {
+            subcontainer: sdk.SubContainer.of(
+              effects,
+              { imageId: 'workspace' },
+              composeMounts(),
+              'compose-startup',
+            ),
+            exec: {
+              command: ['/usr/local/bin/workspace-compose', 'boot'],
+              user: 'dev',
+            },
+            requires: ['docker'],
+          }
+        : null,
+    )
     .addDaemon('ssh', {
       subcontainer: workspace,
       exec: {
@@ -149,6 +173,13 @@ export const main = sdk.setupMain(async ({ effects }) => {
             ? [
                 '/usr/local/bin/nextcloud-workspace',
                 'serve',
+                ...(dockerConfig.weeklyCleanup
+                  ? [
+                      '--weekly',
+                      '--older-than-hours',
+                      String(dockerConfig.cleanupAgeHours),
+                    ]
+                  : []),
                 '--config',
                 nextcloudConfigPath,
               ]

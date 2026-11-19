@@ -168,7 +168,7 @@ Package-provided action labels and prompts are available in English and Spanish.
 
 Key-management actions change access for the shared development account. They update the active key set without restarting the workspace or interrupting existing development processes.
 
-**Configure Containers**, **Container Storage**, and **Clean Containers** manage the rootless Podman engine. Configuration requires the workspace to be stopped. Cleanup requires confirmation and removes unused images older than the configured age, including unused build layers. Containers, named volumes, projects, and Nextcloud uploads are retained. The default age is seven days. There is no total disk quota or automatic cache budget.
+**Configure Containers**, **Container Storage**, and **Clean Containers** manage the rootless Podman engine. Configuration requires the workspace to be stopped. On-demand cleanup requires confirmation and removes unused images older than the configured age, including unused build layers. Containers, named volumes, projects, and Nextcloud uploads are retained. The default age is seven days. There is no total disk quota or automatic cache budget.
 
 The **Packages** action group offers **Connect to StartOS**, **Disconnect from StartOS**, **Scan S9PK Packages**, **Cancel Package Scan**, **Browse S9PK Packages**, **Install S9PK Package**, and **Installation Status**. Server address and CA are discovered from StartOS. The package manager identity is independent of terminal `startos-target` profiles and build signing keys.
 
@@ -249,7 +249,7 @@ Keep active database files on local storage or native database volumes. A succes
 
 The optional Podman engine supports local projects at `/home/dev/projects`. Shared provider paths are not mounted into the engine; do not use `/projects-shared` for container bind mounts or Dev Containers. Keep active container projects and database storage on native local storage. Remote SSH followed by Dev Containers avoids requiring a Docker installation on the client computer. The tested x86 Node/Compose workflow does not establish other project configurations, ARM Dev Containers, foreign-architecture builds or complete lifecycle recovery. [Remote Docker development](https://code.visualstudio.com/remote/advancedcontainers/develop-remote-host)
 
-The workspace does not automatically restart project applications after package restart, backup, update, or server reboot. tmux can preserve a session across a client disconnect while the service remains running; it does not preserve processes through the StartOS lifecycle.
+When Dev Workspace starts, it starts registered Compose projects with autostart enabled. Other project commands require a manual start. A tmux session survives client disconnects and ends when the workspace stops.
 
 Native x86 validation retained the same tmux heartbeat process and advancing saved output after normal SSH command exit, forced SSH transport loss, reattachment and desktop-browser closure/reconnection. The [process continuity guide](instructions.md#keeping-a-command-running) distinguishes these client events from a workspace stop or server reboot and gives the manual relaunch procedure. These checks do not establish server reboot or backup/restore acceptance.
 
@@ -322,6 +322,8 @@ actions:
   - configure-docker
   - docker-storage
   - clean-docker
+  - register-compose
+  - manage-compose
   - connect-nextcloud-account
   - cancel-nextcloud-setup
   - choose-nextcloud-folder
@@ -346,3 +348,34 @@ tasks:
   - { action: add-ssh-key, severity: important }
 health_checks: [ssh, docker, web-previews, ssh-connections, nextcloud, ssh-keys]
 ```
+
+### Supervised local Compose projects
+
+In **Containers**, use **Register Compose Project** with a stable lowercase project name, a directory relative to `/home/dev/projects`, and its Compose file. Choose **Start with Dev Workspace** for automatic startup. **Manage Compose Project** lists registrations, starts and stops services, shows container status and unregisters stopped projects. Register the same name and paths again to change the preference.
+
+To try a disposable app, copy the [example Compose project](tests/fixtures/supervised-project) to `/home/dev/projects/demo`. In the development SSH shell, register and start it with these commands.
+
+```sh
+workspace-compose register demo demo compose.yaml on
+workspace-compose start demo
+curl -fsS http://127.0.0.1:18654/write
+curl -fsS http://127.0.0.1:18654/read
+workspace-compose status demo
+workspace-compose logs demo
+workspace-compose stop demo
+workspace-compose unregister demo
+```
+
+Use a distinct project name for each stack. Keep environment files and application credentials in the project. Read application logs in your SSH session, since applications can print secrets. Stop preserves containers, named volumes and the next-start preference. Unregister removes the registration and preserves the stopped resources. Choose autostart off to keep a registered project stopped across restarts. Manage published application ports in Compose and grant browser access separately through Web Previews.
+
+### Give someone access to shared project files
+
+For a collaborator who needs files only, use a named Nextcloud account and share just the project folder from the owner's Files view. Start with read-only permissions. The collaborator signs in to their own Nextcloud account and opens that folder from Shared with you. Keep private projects, deployment credentials, environment files and container sockets outside the shared folder. To revoke access, remove that recipient in the folder's sharing panel. Copies already downloaded remain with the recipient.
+
+Workspace SSH keys and the browser desktop grant access to the owner's development account. Keep those credentials with the developer. Run Compose from a local project directory and copy only the files intended for the collaborator into the shared folder.
+
+### Review storage before cleanup
+
+**Container Storage** shows Podman usage, the count and upper size estimate for old unused images, current log allocation, named volumes and Nextcloud cache allocation where readable. Shared layers can make the estimate much larger than the space recovered. **Configure Containers** accepts an optional low-space threshold in GiB. Zero disables the warning. Falling below the threshold displays a warning the next time you review storage.
+
+**Clean Containers** shows the cleanup scope and asks for confirmation. Podman checks eligibility again when cleanup runs. The result includes the change in available filesystem bytes during the operation. Other writes on the same filesystem can affect this measurement. Cleanup runs on demand and retains containers, named volumes and the Nextcloud upload cache. To also run cleanup weekly, stop the workspace, enable **Run unused image cleanup weekly** in **Configure Containers**, and start the workspace. The first sweep is due seven days later. An overdue sweep runs once when the engine resumes with scheduling enabled. A failed sweep retries in one hour. **Container Storage** shows the next attempt in UTC. Both modes use the same minimum image age and retain stopped containers, volumes and pending uploads.

@@ -67,6 +67,7 @@ COPY --chmod=755 assets/nextcloud-workspace.py /usr/local/bin/nextcloud-workspac
 COPY --chmod=755 assets/nextcloud-connect.py /usr/local/bin/nextcloud-connect
 COPY --chmod=755 assets/ssh-connections.py /usr/local/bin/ssh-connections
 COPY --chmod=755 assets/workspace-podman.py /usr/local/bin/workspace-podman
+COPY --chmod=755 assets/workspace-compose.py /usr/local/bin/workspace-compose
 COPY --chmod=755 assets/podman-remote.py /usr/local/bin/podman
 COPY --chmod=755 assets/podman-remote.py /usr/local/bin/docker
 COPY --chmod=755 assets/workspace-session.py /usr/local/bin/workspace-session

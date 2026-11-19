@@ -9,6 +9,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from datetime import datetime, timezone
 
 
 RUNTIME = Path('/run/dev-workspace-podman')
@@ -90,7 +93,7 @@ def enter_engine_namespace():
     os.setresuid(1000, 1000, 1000)
 
 
-def serve():
+def serve(weekly, hours):
     enter_engine_namespace()
     os.umask(0o077)
     lock = os.open(RUNTIME / 'engine.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -112,6 +115,8 @@ def serve():
         '--storage-driver', 'overlay', '--storage-opt', 'overlay.mount_program=/usr/bin/fuse-overlayfs',
         'system', 'service', '--time', '0', 'unix://' + str(SOCKET),
     ], env=environment)
+    if weekly:
+        threading.Thread(target=schedule_cleanup, args=(hours,), daemon=True).start()
     def forward(signum, frame):
         if process.poll() is None:
             try:
@@ -136,34 +141,172 @@ def remote(*arguments, timeout=180):
     return result.stdout.strip()
 
 
-def storage_report():
+def filesystem_available():
+    try:
+        fs = os.statvfs(STORAGE)
+        return fs.f_bavail * fs.f_frsize
+    except OSError:
+        return None
+
+
+def policy_preview(hours):
+    images = json.loads(remote('images', '--all', '--filter', 'until=' + str(hours) + 'h', '--format', 'json'))
+    unused = {image['Id']: image['Size'] for image in images if image['Containers'] == 0}
+    return (f'{len(unused)} old image IDs appear unused, up to {sum(unused.values())} image bytes. '
+            'Shared layers can reduce the space freed.')
+
+
+def container_logs():
+    ids = remote('ps', '--all', '--quiet').splitlines()
+    allocated = 0
+    for offset in range(0, len(ids), 100):
+        paths = remote('container', 'inspect', '--format', '{{.HostConfig.LogConfig.Path}}', *ids[offset:offset + 100])
+        for raw in paths.split('\n'):
+            path = Path(raw)
+            if not path.resolve().is_relative_to(STORAGE) or path.name != 'ctr.log':
+                return 'measurement unavailable'
+            try:
+                allocated += path.stat().st_blocks * 512
+            except FileNotFoundError:
+                continue
+    return str(allocated) + ' allocated bytes in current Podman log files'
+
+
+def cache_usage():
+    try:
+        usage = subprocess.check_output(['/usr/bin/du', '-skx', '/var/lib/dev-workspace/nextcloud-cache'],
+                                        text=True, stderr=subprocess.DEVNULL, timeout=30)
+        return str(int(usage.split()[0]) * 1024) + ' allocated bytes'
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 'measurement unavailable'
+
+
+WEEK = 7 * 24 * 3600
+SCHEDULE = RUNTIME / 'weekly-cleanup.json'
+
+
+def read_schedule():
+    data = json.loads(SCHEDULE.read_text())
+    if type(data['next']) is not int or not 0 < data['next'] <= 253402300799:
+        raise ValueError('Invalid weekly cleanup time.')
+    if data['result'] not in ('waiting', 'running', 'failed', 'completed'):
+        raise ValueError('Invalid weekly cleanup result.')
+    return data
+
+
+def save_schedule(due, result):
+    with tempfile.NamedTemporaryFile(dir=RUNTIME, mode='w', delete=False) as tmp:
+        try:
+            json.dump({'next': due, 'result': result}, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            os.replace(tmp.name, SCHEDULE)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+
+def schedule_cleanup(hours):
+    while True:
+        try:
+            now = int(time.time())
+            try:
+                due = read_schedule()['next']
+            except FileNotFoundError:
+                due = now + WEEK
+                save_schedule(due, 'waiting')
+            if due <= now:
+                if not SOCKET.is_socket():
+                    time.sleep(5)
+                    continue
+                save_schedule(now + 3600, 'running')
+                try:
+                    clean(hours)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    save_schedule(int(time.time()) + 3600, 'failed')
+                    raise
+                due = int(time.time()) + WEEK
+                save_schedule(due, 'completed')
+            time.sleep(max(1, min(3600, due - int(time.time()))))
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
+            print('Weekly cleanup needs attention: ' + str(error), file=sys.stderr, flush=True)
+            time.sleep(3600)
+
+
+def schedule_status(weekly):
+    if not weekly:
+        return 'Weekly cleanup is off. Clean Containers is available on demand.'
+    try:
+        data = read_schedule()
+        due = datetime.fromtimestamp(data['next'], timezone.utc).isoformat()
+        return f"Weekly cleanup: {data['result']}. Next attempt: {due}."
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        return 'Weekly cleanup is enabled. Schedule unavailable.'
+
+
+def storage_report(hours, warn_below_gib, weekly=False):
+    cache = cache_usage()
+    if os.geteuid() == 0:
+        os.setgroups([])
+        os.setresgid(1000, 1000, 1000)
+        os.setresuid(1000, 1000, 1000)
+        os.environ['HOME'] = '/home/dev'
+        os.environ['XDG_RUNTIME_DIR'] = str(USER_RUNTIME)
     info = json.loads(remote('info', '--format', 'json'))
+    try:
+        estimate = policy_preview(hours)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
+        estimate = 'Eligible image count unavailable.'
+    try:
+        logs = container_logs()
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        logs = 'measurement unavailable'
+    available = filesystem_available()
+    capacity = 'Storage filesystem availability unknown.' if available is None else f'Storage filesystem: {available} bytes available.'
+    if warn_below_gib:
+        capacity += f' Warning threshold: {warn_below_gib} GiB.'
+        if available is not None and available < warn_below_gib * 1024 ** 3:
+            capacity += ' Below threshold. Review Clean Containers or increase storage.'
     return {
         'version': str(info['version']['Version']),
         'rootless': info['host']['security']['rootless'] is True,
         'driver': str(info['store']['graphDriverName']),
-        'usage': remote('system', 'df'),
+        'usage': '\n'.join([remote('system', 'df'), f'Cleanup age: {hours} hours. ' + estimate,
+                            'Build layers are included in images. A separate size is unavailable.',
+                            'Container logs: ' + logs + '. Logs and named volumes are retained.',
+                            'Nextcloud private cache: ' + cache + '. Excluded from cleanup.', capacity, schedule_status(weekly)]),
     }
 
 
 def clean(hours):
     if type(hours) is not int or not 24 <= hours <= 8760:
         raise ValueError('Cleanup age must be between 24 and 8760 hours.')
-    output = remote('image', 'prune', '--all', '--force', '--filter', 'until=' + str(hours) + 'h', timeout=600)
-    return {'olderThanHours': hours, 'output': output or 'No unused images matched the cleanup age.'}
+    before = filesystem_available()
+    with (RUNTIME / 'cleanup.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        output = remote('image', 'prune', '--all', '--force', '--filter', 'until=' + str(hours) + 'h', timeout=600)
+    after = filesystem_available()
+    change = ('Filesystem available bytes changed by ' + str(after - before) + ' during cleanup. Other writes affect this measurement.'
+              if before is not None and after is not None else 'Filesystem change unavailable.')
+    return {'olderThanHours': hours, 'output': (output or 'No unused images matched the cleanup age.') + '\n' + change}
 
 
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='operation', required=True)
-    for name in ('prepare', 'serve', 'status'):
-        sub.add_parser(name)
+    sub.add_parser('prepare')
+    engine = sub.add_parser('serve')
+    engine.add_argument('--weekly', action='store_true')
+    engine.add_argument('--older-than-hours', type=int, default=168)
+    status = sub.add_parser('status')
+    status.add_argument('--weekly', action='store_true')
+    status.add_argument('--warn-below-gib', type=int, default=0)
+    status.add_argument('--older-than-hours', type=int, default=168)
     sub.add_parser('clean').add_argument('--older-than-hours', type=int, required=True)
     args = parser.parse_args()
     try:
         if args.operation == 'serve':
-            return serve()
-        result = prepare() if args.operation == 'prepare' else storage_report() if args.operation == 'status' else clean(args.older_than_hours)
+            return serve(args.weekly, args.older_than_hours)
+        result = prepare() if args.operation == 'prepare' else storage_report(args.older_than_hours, args.warn_below_gib, args.weekly) if args.operation == 'status' else clean(args.older_than_hours)
         print(json.dumps(result))
         return 0
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:

@@ -1,0 +1,12 @@
+services:
+  db:
+    image: docker.io/library/python:3.13-alpine
+    command: python /app.py db
+    volumes: ["./app.py:/app.py:ro", "records:/data"]
+  web:
+    image: docker.io/library/python:3.13-alpine
+    command: python /app.py web
+    volumes: ["./app.py:/app.py:ro"]
+    ports: ["127.0.0.1:18654:8000"]
+volumes:
+  records: {}

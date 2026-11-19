@@ -323,6 +323,23 @@ const dict = {
   'Package ID': 319,
   'Remaining: ${hours} h ${minutes} min ${seconds} s.': 320,
   'Reopen List Web Previews to refresh the remaining time.': 321,
+  'Register Compose Project': 334,
+  'Save a local project or update its startup preference.': 335,
+  'Stable project name': 336,
+  'Directory relative to /home/dev/projects': 337,
+  'Compose file relative to that directory': 338,
+  'Start with Dev Workspace': 339,
+  'Manage Compose Project': 340,
+  'Stop preserves startup preference and volumes. Read recent logs over SSH with workspace-compose logs NAME.': 341,
+  Operation: 342,
+  'List projects': 343,
+  Start: 344,
+  Stop: 345,
+  'Service status': 346,
+  'Unregister stopped project': 347,
+  'No registered projects.': 348,
+  'Warn below available GiB in Container Storage (0 disables)': 370,
+  'Run unused image cleanup weekly': 371,
 } as const
 
 export type I18nKey = keyof typeof dict

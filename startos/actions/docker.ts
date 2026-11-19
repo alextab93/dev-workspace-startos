@@ -1,12 +1,28 @@
+import { z } from '@start9labs/start-sdk'
 import { sdk } from '../sdk'
 import { i18n } from '../i18n'
 import {
   configureDockerSettings,
   readDockerConfig,
   runDockerClient,
+  runContainerTool,
   storageValidator,
   cleanupValidator,
 } from '../docker'
+
+class WeeklyCleanupToggle extends sdk.Value<boolean | undefined> {
+  constructor() {
+    const toggle = sdk.Value.toggle({
+      name: i18n('Run unused image cleanup weekly'),
+      default: false,
+    })
+    const validator = z.boolean().optional()
+    super(
+      async (options) => ({ ...(await toggle.build(options)), validator }),
+      validator,
+    )
+  }
+}
 
 export const configureDocker = sdk.Action.withInput(
   'configure-docker',
@@ -23,6 +39,15 @@ export const configureDocker = sdk.Action.withInput(
   }),
   sdk.InputSpec.of({
     enabled: sdk.Value.toggle({ name: i18n('Enable Podman'), default: false }),
+    weeklyCleanup: new WeeklyCleanupToggle(),
+    freeSpaceWarningGiB: sdk.Value.number({
+      name: i18n('Warn below available GiB in Container Storage (0 disables)'),
+      default: 0,
+      required: false,
+      integer: true,
+      min: 0,
+      max: 65536,
+    }),
     cleanupAgeHours: sdk.Value.number({
       name: i18n('Minimum Cleanup Age'),
       description: i18n(
@@ -36,9 +61,19 @@ export const configureDocker = sdk.Action.withInput(
       units: i18n('hours'),
     }),
   }),
-  async () => readDockerConfig(),
+  async () => ({
+    weeklyCleanup: false,
+    freeSpaceWarningGiB: 0,
+    ...(await readDockerConfig()),
+  }),
   async ({ effects, input }) => {
-    const value = await configureDockerSettings(effects, input)
+    const { freeSpaceWarningGiB, ...settings } = input
+    const value = await configureDockerSettings(
+      effects,
+      freeSpaceWarningGiB == null
+        ? settings
+        : { ...settings, freeSpaceWarningGiB },
+    )
     return {
       version: '1',
       title: i18n('Container Settings Saved'),
@@ -68,8 +103,16 @@ export const dockerStorage = sdk.Action.withoutInput(
     access: 'user',
   }),
   async ({ effects }) => {
+    const config = await readDockerConfig()
     const value = storageValidator.parse(
-      await runDockerClient(effects, ['status']),
+      await runDockerClient(effects, [
+        'status',
+        ...(config.weeklyCleanup ? ['--weekly'] : []),
+        '--older-than-hours',
+        String(config.cleanupAgeHours),
+        '--warn-below-gib',
+        String(config.freeSpaceWarningGiB ?? 0),
+      ]),
     )
     return {
       version: '1',
@@ -103,15 +146,26 @@ export const cleanDocker = sdk.Action.withInput(
     visibility: 'enabled',
     access: 'user',
   }),
-  async () => {
+  async ({ effects }) => {
     const config = await readDockerConfig()
+    const preview = storageValidator.parse(
+      await runDockerClient(effects, [
+        'status',
+        ...(config.weeklyCleanup ? ['--weekly'] : []),
+        '--older-than-hours',
+        String(config.cleanupAgeHours),
+      ]),
+    )
     return sdk.InputSpec.of({
       confirmed: sdk.Value.toggle({
         name: i18n('Confirm Cleanup'),
-        description: i18n(
-          'Remove unused images older than ${hours} hours. Containers and volumes are retained; images may need downloading or rebuilding.',
-          { hours: config.cleanupAgeHours },
-        ),
+        description:
+          preview.usage +
+          '\n\n' +
+          i18n(
+            'Remove unused images older than ${hours} hours. Containers and volumes are retained; images may need downloading or rebuilding.',
+            { hours: config.cleanupAgeHours },
+          ),
         default: false,
       }),
     })
@@ -142,4 +196,103 @@ export const cleanDocker = sdk.Action.withInput(
       },
     }
   },
+)
+
+export const registerCompose = sdk.Action.withInput(
+  'register-compose',
+  async () => ({
+    name: i18n('Register Compose Project'),
+    description: i18n('Save a local project or update its startup preference.'),
+    warning: null,
+    allowedStatuses: 'only-running',
+    group: i18n('Containers'),
+    visibility: 'enabled',
+    access: 'user',
+  }),
+  sdk.InputSpec.of({
+    name: sdk.Value.text({
+      name: i18n('Stable project name'),
+      default: null,
+      required: true,
+    }),
+    directory: sdk.Value.text({
+      name: i18n('Directory relative to /home/dev/projects'),
+      default: null,
+      required: true,
+    }),
+    file: sdk.Value.text({
+      name: i18n('Compose file relative to that directory'),
+      default: 'compose.yaml',
+      required: true,
+    }),
+    autostart: sdk.Value.toggle({
+      name: i18n('Start with Dev Workspace'),
+      default: false,
+    }),
+  }),
+  async () => ({}),
+  async ({ effects, input }) => ({
+    version: '1',
+    title: i18n('Register Compose Project'),
+    message: await runContainerTool(
+      effects,
+      [
+        'register',
+        '--',
+        input.name,
+        input.directory,
+        input.file,
+        input.autostart ? 'on' : 'off',
+      ],
+      true,
+    ),
+    result: null,
+  }),
+)
+
+export const manageCompose = sdk.Action.withInput(
+  'manage-compose',
+  async () => ({
+    name: i18n('Manage Compose Project'),
+    description: i18n(
+      'Stop preserves startup preference and volumes. Read recent logs over SSH with workspace-compose logs NAME.',
+    ),
+    warning: null,
+    allowedStatuses: 'only-running',
+    group: i18n('Containers'),
+    visibility: 'enabled',
+    access: 'user',
+  }),
+  sdk.InputSpec.of({
+    operation: sdk.Value.select({
+      name: i18n('Operation'),
+      values: {
+        list: i18n('List projects'),
+        start: i18n('Start'),
+        stop: i18n('Stop'),
+        status: i18n('Service status'),
+        unregister: i18n('Unregister stopped project'),
+      },
+      default: 'list',
+    }),
+    name: sdk.Value.text({
+      name: i18n('Stable project name'),
+      default: null,
+      required: false,
+    }),
+  }),
+  async () => ({}),
+  async ({ effects, input }) => ({
+    version: '1',
+    title: i18n('Manage Compose Project'),
+    message:
+      (await runContainerTool(
+        effects,
+        input.operation === 'list'
+          ? ['list']
+          : [input.operation, '--', input.name || ''],
+        true,
+      )) || i18n('No registered projects.'),
+    result: null,
+  }),
 )

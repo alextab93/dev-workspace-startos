@@ -8,6 +8,8 @@ export const defaultDockerConfig = {
 
 export const dockerConfigValidator = z.looseObject({
   enabled: z.boolean().default(defaultDockerConfig.enabled),
+  weeklyCleanup: z.boolean().optional(),
+  freeSpaceWarningGiB: z.number().int().min(0).max(65536).optional(),
   cleanupAgeHours: z.number().int().min(24).max(8760).default(168),
 })
 

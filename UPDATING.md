@@ -182,6 +182,8 @@ Building and testing an artifact does not publish it. Follow the user's explicit
 
 ## Podman and S9PK manager acceptance
 
+With Podman enabled in a disposable workspace, run `python3 tests/composeProject.py SSH_HOST`. The SSH test creates its own Compose project, exercises repeated Start, reads the application database after Stop and Unregister, and removes the test project and volume. Use `--ssh-config FILE` for a dedicated test identity.
+
 The active engine path is `assets/workspace-podman.py`, `assets/podman-remote.py`, and the Podman daemon in `startos/main.ts`. The image installs the same remote client wrapper as both `podman` and `docker`. Existing `docker` volume, configuration, action and daemon identifiers remain compatibility names; `tests/docker.test.ts` and `tests/dockerBackups.test.ts` still validate the shipped settings and persistent storage behavior.
 
 `assets/workspace-docker.py`, `assets/runc-nested.py`, and `tests/dockerRuntime.test.py` belong to the earlier rejected rootful Docker implementation. They remain in source for historical reference, are not selected by the current image's `COPY` instructions or active runtime, and are not part of `test:helpers` or `npm test`. Passing that Python suite would not validate Podman. Do not use its BuildKit cache budget, Docker storage report or nested-runc expectations as the current feature contract. The shipped cleanup action prunes age-filtered unused Podman images and retains containers and named volumes; it does not enforce a total storage quota. Future removal of the historical files should be a separate deliberate change.

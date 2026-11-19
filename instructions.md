@@ -308,16 +308,20 @@ Inside that session, enter the project directory and start its usual command. Pr
 | Disconnect SSH or close the remote editor | An attached tmux command continues. Reconnect and reattach. A command started directly in an ordinary terminal has no package-level continuity guarantee. |
 | Stop or restart only Dev Workspace Desktop | The GUI and its SSH connection are interrupted. Project processes belong to the separate Dev Workspace service. |
 | Stop Dev Workspace, including for an update or backup | Workspace processes and tmux sessions end. Saved files and retained container data are distinct from running processes. |
-| Reboot the server | Expect the workspace's application processes and tmux sessions to end. After the service is available, reconnect and start your project commands again. |
+| Reboot the server | Expect the workspace's application processes and tmux sessions to end. The workspace starts registered Compose projects with autostart enabled. Reconnect to start other commands. |
 | Remove or expire a Web Preview | Browser access ends. The preview does not stop, launch or supervise the application. |
 
-The startup policy is manual: after a workspace restart, backup, update or server reboot, relaunch the project's application commands or Compose stack and check its health. Neither Webtop nor a preview lease restarts Rails, databases or arbitrary commands. Native tests verified tmux across SSH disconnection and desktop-browser closure; full server reboot and backup/restore acceptance remain separate.
+Use **Containers → Register Compose Project** to select a local project, its Compose file and a stable project name. Enable **Start with Dev Workspace** to start the project after the engine becomes ready. **Manage Compose Project** shows status and supports start, stop and unregister. Stop preserves the next-start preference. Register the same project again to change it. Unregister a stopped project to remove its registration and retain its containers and volumes. Run `workspace-compose logs NAME` over SSH for recent logs.
+
+Relaunch shell commands and tmux sessions manually after workspace restart. Preview expiry controls browser access independently of application startup.
 
 ## Managing access
 
 Use **List SSH Keys** to inspect registered public fingerprints and labels. Use **Add SSH Key** for another trusted device and **Remove SSH Key** when a device should no longer establish new connections.
 
 Key changes do not restart your workspace. Removing a key does not disconnect an already authenticated session. Removing the last key leaves the service running, but new logins fail until you register another key through StartOS.
+
+For a collaborator who only needs shared files, share the project folder with their named Nextcloud account and select read-only access. Remove that recipient from the share to revoke access. Keep the developer's SSH keys and Desktop credentials private.
 
 Your workspace login does not configure private Git repositories or commit signing. Set up the Git credential and signing method you intend to use inside the remote workspace. SSH agent forwarding is disabled.
 
@@ -333,7 +337,7 @@ Use **Dev Containers: Rebuild Container** after changing the image. Store source
 
 Use the editor's **Ports** panel to forward a development HTTP port. When VS Code runs in Dev Workspace Desktop, that forwarded localhost belongs to the desktop service. Its built-in Browser can open the forwarded address. Use a Web Preview interface when you need an address directly accessible from your own computer's browser. Restart application processes after rebuilding or reopening a container when they are not managed by its startup command.
 
-Use **Container Storage** to inspect disk use and **Clean Containers** to remove unused images older than the configured age, seven days by default. This includes unused build layers. Containers, named volumes, projects, and Nextcloud uploads are retained. Removed images may need downloading or rebuilding. There is no automatic total storage limit. Cleanup affects this server's workspace engine; existing Docker data on your computer is separate.
+Use **Container Storage** to inspect disk use and **Clean Containers** to remove unused images older than the configured age, seven days by default. This includes unused build layers. Containers, named volumes, projects, and Nextcloud uploads are retained. Removed images may need downloading or rebuilding. The optional low-space threshold displays a warning in Container Storage. Review the age-filtered estimate and confirm cleanup when needed. To also run cleanup weekly, stop the workspace, enable **Run unused image cleanup weekly** in **Configure Containers**, and start the workspace. The first sweep is due seven days later. An overdue sweep runs once when the engine resumes with scheduling enabled. A failed sweep retries in one hour. **Container Storage** shows the next attempt in UTC. Both modes use the same minimum image age and retain stopped containers, volumes and pending uploads. Cleanup affects this server's workspace engine; existing Docker data on your computer is separate.
 
 ## Building and installing StartOS packages
 
@@ -393,7 +397,7 @@ The shared-source selection is saved, but the original files at `/projects-share
 
 Plan backup time as an interruption: save editor buffers, stop application writes and let Nextcloud uploads drain first. StartOS documents stopping a running service for backup and starting it again afterward; an already stopped service stays stopped. This workspace's complete shutdown and backup sequence still needs native verification. Running processes and unsaved buffers are not restored. [StartOS backup lifecycle](https://docs.start9.com/start-os/0.4.1.x/backup-create.html).
 
-After an isolated restore, use **Connection Information** for the current address and port and verify the saved host fingerprint, project bytes, tools and database records. Relaunch application commands or Compose stacks manually. Restoring preview state revokes its saved access; set a new preview password and create new previews.
+After an isolated restore, use **Connection Information** for the current address and port and verify the saved host fingerprint, project bytes, tools and database records. Check each registered project’s autostart preference and status. Relaunch other application commands manually. Restoring preview state revokes its saved access; set a new preview password and create new previews.
 
 After restore, the package manager and `startos-target` require fresh StartOS logins. Use **Connect to StartOS** for the manager. To enroll a terminal identity on the current server, run `startos-target add-local restored-server`, review its address, then run `startos-target login restored-server` interactively. Existing terminal profiles still point to their saved servers; inspect them before choosing to log in. Restarts and upgrades preserve working logins.
 

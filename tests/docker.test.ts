@@ -13,6 +13,8 @@ import {
   type DockerConfigFiles,
 } from '../startos/docker'
 
+import { configureDocker } from '../startos/actions/docker'
+
 let directory: string
 before(async () => {
   directory = await fs.mkdtemp(join(tmpdir(), 'dev-workspace-docker-'))
@@ -94,6 +96,22 @@ test('invalid Docker configuration fails without echoing its contents', () => {
         'Podman settings are invalid. Stop Dev Workspace and use Configure Containers.',
     })
   }
+})
+
+test('a client using the original container form reaches the stopped-workspace check', async () => {
+  const effects = effectsBoundary({
+    desired: { main: 'running' },
+    started: true,
+  })
+  await configureDocker.getInput({ effects, prefill: null })
+  const legacyInput = { enabled: true, cleanupAgeHours: 168 }
+  await assert.rejects(
+    configureDocker.run({
+      effects,
+      input: legacyInput as typeof configureDocker._INPUT,
+    }),
+    { message: 'Stop Dev Workspace before changing container settings.' },
+  )
 })
 
 test('configuration changes are refused while running, starting, stopping, or unobservable', async () => {

@@ -1,17 +1,18 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.6.0:9',
+  version: '0.6.0:10',
   releaseNotes: {
-    en_US: 'Revoke all saved web previews during workspace recovery.',
+    en_US:
+      'Supervise local Compose projects, review storage estimates and optionally clean unused images weekly.',
     es_ES:
-      'Revoca todas las vistas previas web guardadas al restaurar el espacio de trabajo.',
+      'Supervisa proyectos Compose locales, consulta el uso del almacenamiento y activa la limpieza semanal de imágenes sin usar.',
     de_DE:
-      'Widerruft alle gespeicherten Webvorschauen bei der Wiederherstellung des Arbeitsbereichs.',
+      'Lokale Compose-Projekte verwalten, Speicherbedarf prüfen und ungenutzte Images auf Wunsch wöchentlich bereinigen.',
     pl_PL:
-      'Unieważnia wszystkie zapisane podglądy stron podczas przywracania obszaru roboczego.',
+      'Zarządzaj lokalnymi projektami Compose, sprawdzaj użycie miejsca i włącz opcjonalne cotygodniowe usuwanie nieużywanych obrazów.',
     fr_FR:
-      'Révoque tous les aperçus web enregistrés lors de la restauration de l’espace de travail.',
+      'Gérez les projets Compose locaux, consultez les estimations de stockage et activez le nettoyage hebdomadaire des images inutilisées.',
   },
   migrations: { up: async () => {}, down: IMPOSSIBLE },
 })
