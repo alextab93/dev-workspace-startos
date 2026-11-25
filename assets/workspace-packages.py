@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 
@@ -102,7 +103,10 @@ class Manager:
         self.stopping = False
         self.job = read_json(state / 'job.json', None)
         if self.job and self.job['state'] == 'running':
-            self.job.update(state='interrupted', message='The workspace restarted. Check the installed package before retrying.', finishedAt=now())
+            message = ('The workspace restarted. Inspect the shared destination before retrying.'
+                       if self.job.get('operation', '').startswith('export-')
+                       else 'The workspace restarted. Check the operation before retrying.')
+            self.job.update(state='interrupted', message=message, finishedAt=now())
             write_json(state / 'job.json', self.job)
             history = read_json(state / 'history.json', [])
             history.append(dict(self.job))
@@ -150,7 +154,7 @@ class Manager:
         os.replace(temporary, ca)
         return [CLI, '-H', seed['url'], '--root-ca', str(ca), '--id-key-path', str(key)]
 
-    def run(self, command, timeout=60, environment=None, user=None, output=None):
+    def run(self, command, timeout=60, environment=None, user=None, output=None, progress=None):
         options = {'user': user, 'group': user, 'extra_groups': []} if user is not None else {}
         with self.lock:
             if self.stopping:
@@ -164,8 +168,39 @@ class Manager:
             if command[:2] == [FILES, 'scan']:
                 self.scan_process = process
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
+            if progress is None:
+                stdout, stderr = process.communicate(timeout=timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                latest = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    try:
+                        stdout, stderr = process.communicate(timeout=min(1, remaining))
+                        break
+                    except subprocess.TimeoutExpired as pending:
+                        lines = (pending.output or b'').split(b'\n')[:-1]
+                        current = lines[-1] if lines else None
+                        if current != latest and current in progress:
+                            self.update(message=progress[current])
+                            latest = current
             if process.returncode:
+                if command[0] == '/usr/local/bin/workspace-import':
+                    lines = stderr.decode(errors='replace').strip().splitlines()
+                    raise PackageError(lines[-1][:512] if lines else 'Import interrupted. Retry the project import.')
+                if command[:2] == ['/usr/local/bin/nextcloud-workspace', 'export']:
+                    try:
+                        message = json.loads(stdout)['message']
+                    except (ValueError, KeyError, TypeError):
+                        message = 'Nextcloud export was interrupted. Inspect the destination before retrying.'
+                    raise PackageError(message)
+                if command[:2] == [FILES, 'export-filebrowser']:
+                    reason = stderr.decode('utf-8', errors='replace').strip()
+                    if reason == 'The destination file already exists.':
+                        raise PackageError(reason)
+                    raise PackageError('Export failed. Check both paths, free space and destination permissions.')
                 raise PackageError('The operation failed. Check server access, package compatibility, and signer trust before retrying.')
             return (stdout or b'').decode('utf-8')
         finally:
@@ -307,8 +342,52 @@ class Manager:
             threading.Thread(target=execute, daemon=True).start()
             return dict(self.job)
 
+    def import_project(self, request):
+        self.update(message='Copying the shared project to local staging and verifying its contents.')
+        output = self.run(['/usr/local/bin/workspace-import', request['provider'], '--', request['source'],
+                           request['destination']], user=1000, timeout=86400, progress={
+            b'copy': 'Copying shared files into a new local staging directory.',
+            b'verify': 'Verifying source and destination contents and checking for changed files.',
+            b'git': 'Restoring Git executable permissions and symbolic links in the verified local copy.',
+        })
+        result = json.loads(output.splitlines()[-1])
+        self.update(message='Verified. Open this folder in VS Code: ' + result['path'])
+
+    def export_filebrowser(self, source, folder):
+        if not isinstance(source, str) or not isinstance(folder, str):
+            raise PackageError('Enter the local artifact path and shared destination directory.')
+        self.update(message='Copying the artifact and verifying the destination SHA-256.')
+        output = self.run([FILES, 'export-filebrowser', '--', source, folder], user=1000, timeout=7200,
+                          progress={b'copy': 'Copying artifact to shared storage.',
+                                    b'verify': 'Verifying the copied artifact SHA-256.'})
+        result = json.loads(output.splitlines()[-1])
+        self.update(message=f"Exported {result['file']} ({result['bytes']} bytes). SHA-256: {result['sha256']}")
+
+    def export_nextcloud(self, source, folder):
+        if not isinstance(source, str) or not isinstance(folder, str):
+            raise PackageError('Enter the local artifact path and shared destination directory.')
+        path, directory = Path(source), Path(folder)
+        if path.is_absolute() or directory.is_absolute() or '..' in path.parts + directory.parts or not path.name:
+            raise PackageError('Choose paths relative to the local and shared project directories.')
+        with tempfile.NamedTemporaryFile(prefix='stage-', suffix='.s9pk', dir=self.state) as staged:
+            self.update(message='Reading the completed artifact from local project storage.')
+            self.run([FILES, 'stream', str(Path('/home/dev/projects') / path)], user=1000, output=staged, timeout=3600)
+            staged.flush()
+            self.update(message='Checking pending uploads, sending the file to Nextcloud and verifying its SHA-256 through WebDAV.')
+            result = json.loads(self.run(['/usr/local/bin/nextcloud-workspace', 'export', '--', staged.name,
+                                          str(directory / path.name)], timeout=7200))
+            self.update(message=f"Exported {result['file']} ({result['bytes']} bytes). SHA-256: {result['sha256']}")
+
     def dispatch(self, request):
         operation = request.get('operation')
+        if operation == 'import-project':
+            if request.get('confirmed') is not True or request.get('provider') not in ('filebrowser', 'nextcloud'):
+                raise PackageError('Confirm the new local project and select a shared provider.')
+            return self.start(operation, lambda: self.import_project(request))
+        if operation == 'export-nextcloud':
+            return self.start(operation, lambda: self.export_nextcloud(request.get('source'), request.get('folder')))
+        if operation == 'export-filebrowser':
+            return self.start(operation, lambda: self.export_filebrowser(request.get('source'), request.get('folder')))
         if operation == 'catalog':
             return self.catalog()
         if operation == 'status':

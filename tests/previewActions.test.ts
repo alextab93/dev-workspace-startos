@@ -185,6 +185,63 @@ test('preview list reports readiness only for the current credential configurati
         assert.equal(await fs.readFile(runtimePath, 'utf8'), savedReport)
       })
     }
+    await t.test(
+      'a reachable preview offers the installed Vite command on its application port',
+      async () => {
+        await fs.writeFile(configPath, JSON.stringify(config))
+        const address = {
+          hostname: 'workspace.local',
+          port: 59221,
+          ssl: true,
+          public: false,
+          metadata: { kind: 'mdns', gateways: ['eth0'] },
+        }
+        const network = {
+          ...effects,
+          async getHostInfo() {
+            return {
+              bindings: {
+                [lease.proxyPort]: {
+                  enabled: true,
+                  addresses: {
+                    enabled: [],
+                    disabled: [],
+                    lanEnabled: [],
+                    guaWan: [],
+                    available: [address],
+                  },
+                  interfaces: {},
+                  options: {},
+                  net: {
+                    assignedPort: lease.proxyPort,
+                    assignedSslPort: address.port,
+                  },
+                },
+              },
+              bindingRanges: {},
+              publicDomains: {},
+              privateDomains: {},
+              portForwards: [],
+            }
+          },
+        } as unknown as T.Effects
+        const response = await listPreviews.run({
+          effects: network,
+          input: null,
+        })
+        if (response?.result?.type !== 'group')
+          throw new Error('Missing preview details')
+        const command = response.result.value.find(
+          (item) => item.name === 'Vite launch command',
+        )
+        if (command?.type !== 'single') throw new Error('Missing Vite command')
+        assert.equal(command.copyable, true)
+        assert.equal(
+          command.value,
+          "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS='workspace.local' ./node_modules/.bin/vite --host 127.0.0.1 --port 5173 --strictPort",
+        )
+      },
+    )
   } finally {
     await fs.rm(directory, { recursive: true, force: true })
   }

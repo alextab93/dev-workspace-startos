@@ -9,6 +9,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 SUITES = {
+    'project-import': ('projectImport.test.py', None),
+    'export-artifact': ('exportArtifact.test.py', None),
     'packages': ('packagesRuntime.test.py', 'DEV_WORKSPACE_PACKAGES_TEST_CONTAINER'),
     'nextcloud-connect': ('nextcloudConnect.test.py', None),
     'nextcloud-files': ('nextcloudRuntime.test.py', None),

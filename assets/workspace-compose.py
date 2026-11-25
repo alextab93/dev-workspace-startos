@@ -1,12 +1,15 @@
 #!/usr/bin/python3
 import argparse
 import fcntl
+import json
 import os
 from pathlib import Path
 import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import time
 
 
 PROJECTS = Path('/home/dev/projects')
@@ -32,26 +35,40 @@ def containers(name, *args):
     ], text=True, timeout=30, stderr=subprocess.DEVNULL).strip()
 
 
-def operate(db, operation, name, directory=None, filename=None, autostart=None):
+def operate(db, operation, name, directory=None, filename=None, autostart=None, vite=None):
     if not re.fullmatch('[a-z0-9][a-z0-9_-]{0,62}', name):
         raise ValueError('Use a lowercase Compose project name of up to 63 characters.')
     with (REGISTRY.parent / ('compose-' + name + '.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        run_project(db, operation, name, directory, filename, autostart)
+        run_project(db, operation, name, directory, filename, autostart, vite)
 
 
-def run_project(db, operation, name, directory, filename, autostart):
+def run_project(db, operation, name, directory, filename, autostart, vite):
     row = db.execute('SELECT directory, filename, autostart FROM projects WHERE name=?', (name,)).fetchone()
     if operation == 'register':
-        paths(directory, filename)
+        project, compose = paths(directory, filename)
         if row and row[:2] != (directory, filename):
             raise ValueError('Unregister this name before selecting another project.')
+        if vite:
+            service, hostname, expiry = vite
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', service) or not re.fullmatch(r'[a-zA-Z0-9.:\[\]-]+', hostname):
+                raise ValueError('Invalid Vite service or hostname.')
+            if not expiry.isdecimal() or int(expiry) <= time.time() * 1000:
+                raise ValueError('Select an active web preview.')
+            services = subprocess.check_output(['/usr/bin/podman-compose', '-f', str(compose), 'config', '--services'],
+                                               cwd=project, text=True, timeout=30, stderr=subprocess.DEVNULL)
+            if service not in services.splitlines():
+                raise ValueError('Vite service is missing from the Compose project.')
+            db.execute('INSERT OR REPLACE INTO vite_previews VALUES (?, ?, ?, ?)', (name, service, hostname, int(expiry)))
+        else:
+            db.execute('DELETE FROM vite_previews WHERE name=?', (name,))
         db.execute('INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?)', (name, directory, filename, autostart == 'on'))
     elif not row:
         raise ValueError('Unknown project.')
     elif operation == 'unregister':
         if containers(name, '--filter', 'status=running', '--quiet'):
             raise ValueError('Stop the project before unregistering it.')
+        db.execute('DELETE FROM vite_previews WHERE name=?', (name,))
         db.execute('DELETE FROM projects WHERE name=?', (name,))
     elif operation == 'status':
         print(containers(name, '--format', '{{.Names}}\t{{.Status}}') or 'No project containers.')
@@ -64,18 +81,28 @@ def run_project(db, operation, name, directory, filename, autostart):
         project, compose = paths(*row[:2])
         args = {'boot': ['up', '-d'], 'start': ['up', '-d'], 'stop': ['stop']}[operation]
         command = ['/usr/bin/podman-compose', '-p', name, '-f', str(compose)]
-        subprocess.run([*command, *args],
-                       cwd=project, check=True, timeout=300,
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
-        if operation in ('boot', 'start'):
-            expected = subprocess.check_output([*command, 'config', '--services'], cwd=project,
-                                               text=True, timeout=30, stderr=subprocess.DEVNULL)
-            running = containers(name, '--filter', 'status=running', '--format',
-                                 '{{.Label "com.docker.compose.service"}}')
-            if not expected.strip() or set(expected.splitlines()) - set(running.splitlines()):
-                raise ValueError('Some services did not start. Check the project status and logs.')
-        elif operation == 'stop' and containers(name, '--filter', 'status=running', '--quiet'):
+        preview = db.execute('SELECT service, hostname FROM vite_previews WHERE name=? AND expires_at>?',
+                             (name, int(time.time() * 1000))).fetchone()
+        with tempfile.TemporaryDirectory(dir=REGISTRY.parent) as temporary:
+            if preview and operation in ('start', 'boot'):
+                service, hostname = preview
+                override = Path(temporary) / 'preview.json'
+                override.write_text(json.dumps({'services': {service: {'environment': {
+                    '__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS': hostname,
+                }}}}))
+                command.extend(['-f', str(override)])
+            subprocess.run([*command, *args],
+                           cwd=project, check=True, timeout=300,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            if operation in ('boot', 'start'):
+                expected = subprocess.check_output([*command, 'config', '--services'], cwd=project,
+                                                   text=True, timeout=30, stderr=subprocess.DEVNULL)
+                running = containers(name, '--filter', 'status=running', '--format',
+                                     '{{.Label "com.docker.compose.service"}}')
+                if not expected.strip() or set(expected.splitlines()) - set(running.splitlines()):
+                    raise ValueError('Some services did not start. Check the project status and logs.')
+        if operation == 'stop' and containers(name, '--filter', 'status=running', '--quiet'):
             raise ValueError('Some project containers are still running.')
     db.commit()
     if operation == 'unregister':
@@ -93,6 +120,7 @@ def main():
     register.add_argument('directory')
     register.add_argument('filename')
     register.add_argument('autostart', choices=['on', 'off'])
+    register.add_argument('vite', nargs='*', metavar='PREVIEW')
     for command in ('start', 'stop', 'status', 'logs', 'unregister'):
         commands.add_parser(command).add_argument('name')
     commands.add_parser('list')
@@ -105,6 +133,7 @@ def main():
     os.umask(0o077)
     with sqlite3.connect(REGISTRY, timeout=330) as db:
         db.execute('CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, directory TEXT, filename TEXT, autostart INTEGER)')
+        db.execute('CREATE TABLE IF NOT EXISTS vite_previews (name TEXT PRIMARY KEY, service TEXT, hostname TEXT, expires_at INTEGER)')
         if args.operation == 'list':
             for name, directory, filename, enabled in db.execute('SELECT * FROM projects ORDER BY name'):
                 print(name, directory, filename, 'autostart=' + ('on' if enabled else 'off'), sep='\t')

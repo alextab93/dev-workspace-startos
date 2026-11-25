@@ -92,9 +92,30 @@ class WebDavBoundary(BaseHTTPRequestHandler):
     def do_PUT(self):
         target = self.server.directory / urllib.parse.unquote(self.path).lstrip('/')
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if self.headers.get('If-None-Match') == '*' and target.exists():
+            self.send_error(412)
+            return
+        target.write_bytes(data)
         self.send_response(201)
         self.end_headers()
+
+
+    def do_HEAD(self):
+        target = self.server.directory / urllib.parse.unquote(self.path).lstrip('/')
+        self.send_response(200 if target.is_file() else 404)
+        self.end_headers()
+
+    def do_GET(self):
+        target = self.server.directory / urllib.parse.unquote(self.path).lstrip('/')
+        if not target.is_file():
+            self.send_error(404)
+            return
+        content = target.read_bytes()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
 
 class NextcloudRuntime(unittest.TestCase):
@@ -148,10 +169,11 @@ class NextcloudRuntime(unittest.TestCase):
         self.config_path.write_text(json.dumps(self.config))
         self.config_path.chmod(0o600)
 
-    def command(self, action, use_config=True):
+    def command(self, action, use_config=True, operands=()):
         command = [sys.executable, str(HELPER), action, '--cache-dir', str(self.cache), '--state-dir', str(self.state)]
         if use_config:
             command.extend(['--config', str(self.config_path)])
+        command.extend(operands)
         response = subprocess.run(command, capture_output=True, text=True, timeout=20)
         self.assertEqual(response.stderr, '')
         self.assertNotIn(self.config['appPassword'], response.stdout)
@@ -176,6 +198,36 @@ class NextcloudRuntime(unittest.TestCase):
                                         'Size': data.stat().st_size, 'Rs': [{'Pos': 0, 'Size': data.stat().st_size}],
                                         'Fingerprint': '', 'Dirty': dirty}))
         return root, data, metadata
+
+    def test_export_reads_back_the_provider_copy_and_preserves_existing_files(self):
+        staged = self.directory / 'staged'
+        staged.write_bytes(os.urandom(1024 * 1024 + 79))
+        destination = 'paquete número uno.s9pk'
+        result = helper.export_artifact(self.config, destination, staged)
+        expected = staged.read_bytes()
+        self.assertEqual(result['sha256'], hashlib.sha256(expected).hexdigest())
+        staged.write_bytes(b'replacement')
+        with self.assertRaisesRegex(helper.WorkspaceError, 'already exists'):
+            helper.export_artifact(self.config, destination, staged)
+        self.assertEqual((self.project / destination).read_bytes(), expected)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Live process identity requires Linux procfs')
+    def test_export_waits_for_queued_uploads_and_retries(self):
+        self.running_state()
+        self.cache.mkdir()
+        staged = self.directory / 'build.s9pk'
+        staged.write_bytes(b'finished artifact')
+        self.server.disk_cache['uploadsQueued'] = 1
+        operands = [str(staged), staged.name]
+        code, result = self.command('export', operands=operands)
+        self.assertEqual(code, 1)
+        self.assertIn('queued Nextcloud uploads', result['message'])
+        self.assertFalse((self.project / staged.name).exists())
+        self.server.disk_cache['uploadsQueued'] = 0
+        code, result = self.command('export', operands=operands)
+        self.assertEqual(code, 0)
+        self.assertEqual(result['sha256'], hashlib.sha256(staged.read_bytes()).hexdigest())
+        self.assertEqual((self.project / staged.name).read_bytes(), staged.read_bytes())
 
     def test_trusted_directory_check_preserves_original_files(self):
         before = {path.relative_to(self.remote): path.read_bytes() for path in self.remote.rglob('*') if path.is_file()}

@@ -1,3 +1,4 @@
+import { readProjectSource } from '../projectSource'
 import { sdk } from '../sdk'
 import { i18n } from '../i18n'
 import {
@@ -295,5 +296,95 @@ export const installationStatus = sdk.Action.withoutInput(
       await packageRequest(effects, { operation: 'status' }),
     )
     return packageStatusResult(status)
+  },
+)
+
+export const exportArtifact = sdk.Action.withInput(
+  'export-artifact',
+  async () => ({
+    name: i18n('Export Artifact to Shared Folder'),
+    description: i18n(
+      'Copy a completed local artifact to the configured shared folder and verify its SHA-256.',
+    ),
+    warning: null,
+    allowedStatuses: 'only-running',
+    group: i18n('Packages'),
+    visibility: 'enabled',
+    access: 'user',
+  }),
+  sdk.InputSpec.of({
+    source: sdk.Value.text({
+      name: i18n('Artifact path relative to /home/dev/projects'),
+      required: true,
+      default: null,
+    }),
+    folder: sdk.Value.text({
+      name: i18n('Existing directory relative to /projects-shared'),
+      required: true,
+      default: '.',
+    }),
+  }),
+  async () => ({}),
+  async ({ effects, input }) => {
+    const { provider } = await readProjectSource(effects)
+    if (provider === 'none')
+      throw new Error(i18n('Select a shared project source before exporting.'))
+    await packageRequest(effects, { operation: `export-${provider}`, ...input })
+    return {
+      version: '1',
+      title: i18n('Export Artifact to Shared Folder'),
+      message: i18n('Open Installation Status to check the result.'),
+      result: null,
+    }
+  },
+)
+
+export const importProject = sdk.Action.withInput(
+  'import-project',
+  async () => ({
+    name: i18n('Import Project to Local'),
+    description: i18n(
+      'Copy and verify a shared project before opening the new local folder in VS Code.',
+    ),
+    warning: null,
+    allowedStatuses: 'only-running',
+    group: i18n('Packages'),
+    visibility: 'enabled',
+    access: 'user',
+  }),
+  sdk.InputSpec.of({
+    source: sdk.Value.text({
+      name: i18n('Existing directory relative to /projects-shared'),
+      required: true,
+      default: null,
+    }),
+    destination: sdk.Value.text({
+      name: i18n('New folder name under /home/dev/projects'),
+      required: true,
+      default: null,
+    }),
+    confirmed: sdk.Value.toggle({
+      name: i18n('Confirm local project copy'),
+      default: false,
+    }),
+  }),
+  async () => ({ confirmed: false }),
+  async ({ effects, input }) => {
+    const { provider } = await readProjectSource(effects)
+    if (!input.confirmed || provider === 'none')
+      throw new Error(
+        i18n('Select a shared source and confirm the local project copy.'),
+      )
+    await packageRequest(effects, {
+      operation: 'import-project',
+      provider,
+      ...input,
+    })
+    return {
+      version: '1',
+      title: i18n('Import Project to Local'),
+      message: i18n('Open Installation Status to check the result.'),
+      result: null,
+    }
   },
 )

@@ -97,6 +97,23 @@ async function details(effects: T.Effects, leases: WebPreview[]) {
       qr: false,
       launchable: urls.length > 0,
     })
+    if (urls.length && lease.expiresAt > now) {
+      const hostname = new URL(urls[0]).hostname
+      if (/^[a-z0-9.[\]:-]+$/i.test(hostname)) {
+        value.push({
+          type: 'single' as const,
+          name: i18n('Vite launch command'),
+          description: i18n(
+            'Run in the project directory with Vite installed.',
+          ),
+          value: `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS='${hostname}' ./node_modules/.bin/vite --host 127.0.0.1 --port ${lease.applicationPort} --strictPort`,
+          masked: false,
+          copyable: true,
+          qr: false,
+          launchable: false,
+        })
+      }
+    }
   }
   return { type: 'group' as const, value }
 }

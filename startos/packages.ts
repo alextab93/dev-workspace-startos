@@ -77,6 +77,9 @@ export function packageStatusResult(status: z.infer<typeof statusValidator>) {
   }
   const operations: Record<string, string> = {
     scan: i18n('Scan S9PK Packages'),
+    'import-project': i18n('Import Project to Local'),
+    'export-nextcloud': i18n('Export Artifact to Shared Folder'),
+    'export-filebrowser': i18n('Export Artifact to Shared Folder'),
     install: i18n('Install S9PK Package'),
     connect: i18n('Connect to StartOS'),
     disconnect: i18n('Disconnect from StartOS'),

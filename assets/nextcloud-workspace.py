@@ -554,20 +554,64 @@ def serve(arguments):
     return {'ok': True, 'drained': True}
 
 
+def export_artifact(config, destination, staged):
+    require(all(safe_text(part, 255) and part not in ('.', '..') and chr(92) not in part
+                for part in destination.split('/')), 'Invalid export destination.')
+    url = endpoint(config) + '/'.join(urllib.parse.quote(part, safe='') for part in destination.split('/'))
+    context = ssl.create_default_context()
+    if config['rootCa']:
+        context.load_verify_locations(cadata=config['rootCa'])
+    client = opener(context)
+    auth = base64.b64encode((config['username'] + ':' + config['appPassword']).encode()).decode()
+    headers = {'Authorization': 'Basic ' + auth}
+    try:
+        with client.open(urllib.request.Request(url, method='HEAD', headers=headers), timeout=10):
+            raise WorkspaceError('The destination file already exists.')
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise WorkspaceError('Nextcloud could not check the destination. Check the folder and permissions.') from None
+    with staged.open('rb') as source:
+        size = os.fstat(source.fileno()).st_size
+        expected = hashlib.file_digest(source, 'sha256').hexdigest()
+        source.seek(0)
+        request = urllib.request.Request(url, method='PUT', data=source, headers={
+            **headers, 'Content-Type': 'application/octet-stream', 'Content-Length': str(size), 'If-None-Match': '*',
+        })
+        try:
+            with client.open(request, timeout=120) as response:
+                require(response.status == 201, 'Nextcloud did not confirm creation of a new file.')
+        except urllib.error.HTTPError as error:
+            if error.code == 412:
+                raise WorkspaceError('The destination file already exists.') from None
+            raise WorkspaceError('Nextcloud refused the upload. Check the destination folder and permissions.') from None
+    with client.open(urllib.request.Request(url, headers=headers), timeout=120) as response:
+        require(response.status == 200 and hashlib.file_digest(response, 'sha256').hexdigest() == expected,
+                'Nextcloud read-back verification failed. Inspect the destination before retrying.')
+    return {'file': destination, 'bytes': size, 'sha256': expected}
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('check', 'serve', 'status', 'pending'):
+    for name in ('check', 'serve', 'status', 'pending', 'export'):
         command = commands.add_parser(name)
         command.add_argument('--config', type=Path, default=None if name == 'pending' else STATE_DIRECTORY / 'config.json')
         command.add_argument('--state-dir', type=Path, default=STATE_DIRECTORY)
         command.add_argument('--cache-dir', type=Path, default=CACHE_DIRECTORY)
+        if name == 'export':
+            command.add_argument('staged', type=Path)
+            command.add_argument('destination')
         if name == 'serve':
             command.add_argument('--mountpoint', type=Path, default=MOUNTPOINT)
             command.add_argument('--drain-timeout', type=float, default=80)
     arguments = parser.parse_args()
     try:
-        if arguments.command == 'check':
+        if arguments.command == 'export':
+            readiness = status(arguments.state_dir, arguments.cache_dir, arguments.config)
+            require(readiness['ready'] and readiness['pendingUploads'] == 0,
+                    'Wait for queued Nextcloud uploads to finish before exporting.')
+            result = export_artifact(load_config(arguments.config), arguments.destination, arguments.staged)
+        elif arguments.command == 'check':
             result = check_remote(load_config(arguments.config))
         elif arguments.command == 'pending':
             excluded = cache_key(load_config(arguments.config)) if arguments.config else None

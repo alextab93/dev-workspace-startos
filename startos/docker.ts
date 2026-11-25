@@ -64,6 +64,8 @@ export const storageValidator = z.object({
   version: z.string().max(128),
   rootless: z.literal(true),
   driver: z.string().max(128),
+  categories: z.array(z.object({ name: z.string(), value: z.string() })),
+  notes: z.array(z.string()),
   usage: z.string().max(65536),
 })
 export const cleanupValidator = z.object({

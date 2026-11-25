@@ -266,14 +266,30 @@ def storage_report(hours, warn_below_gib, weekly=False):
         capacity += f' Warning threshold: {warn_below_gib} GiB.'
         if available is not None and available < warn_below_gib * 1024 ** 3:
             capacity += ' Below threshold. Review Clean Containers or increase storage.'
+    try:
+        rows = json.loads(remote('system', 'df', '--format', 'json'))
+        by_type = {row['Type']: row for row in rows}
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError, subprocess.SubprocessError):
+        by_type = {}
+    categories = []
+    for name in dict.fromkeys(['Images', 'Containers', 'Local Volumes', *by_type]):
+        row = by_type.get(name, {})
+        values = []
+        for field in ('Total', 'Active', 'Size', 'Reclaimable'):
+            value = row.get(field)
+            values.append(f"{field}: {value if value is not None and value != '' else 'Unavailable'}")
+        categories.append({'name': name, 'value': '\n'.join(values)})
+    notes = [f'Cleanup age: {hours} hours. ' + estimate,
+             'Build layers are included in images. A separate size is unavailable.',
+             'Container logs: ' + logs + '. Logs and named volumes are retained.',
+             'Nextcloud private cache: ' + cache + '. Excluded from cleanup.', capacity, schedule_status(weekly)]
     return {
         'version': str(info['version']['Version']),
         'rootless': info['host']['security']['rootless'] is True,
         'driver': str(info['store']['graphDriverName']),
-        'usage': '\n'.join([remote('system', 'df'), f'Cleanup age: {hours} hours. ' + estimate,
-                            'Build layers are included in images. A separate size is unavailable.',
-                            'Container logs: ' + logs + '. Logs and named volumes are retained.',
-                            'Nextcloud private cache: ' + cache + '. Excluded from cleanup.', capacity, schedule_status(weekly)]),
+        'categories': categories,
+        'notes': notes,
+        'usage': '\n'.join([entry['name'] + '\n' + entry['value'] for entry in categories] + notes),
     }
 
 

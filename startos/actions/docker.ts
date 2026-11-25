@@ -1,4 +1,5 @@
 import { z } from '@start9labs/start-sdk'
+import { previewUrls, readPreviewConfig } from '../previews'
 import { sdk } from '../sdk'
 import { i18n } from '../i18n'
 import {
@@ -122,12 +123,20 @@ export const dockerStorage = sdk.Action.withoutInput(
         { version: value.version, driver: value.driver },
       ),
       result: {
-        type: 'single',
-        value: value.usage,
-        masked: false,
-        copyable: true,
-        qr: false,
-        launchable: false,
+        type: 'group',
+        value: [
+          ...value.categories,
+          { name: i18n('Container Storage'), value: value.notes.join('\n\n') },
+        ].map(({ name, value }) => ({
+          type: 'multiline' as const,
+          name,
+          value,
+          description: null,
+          masked: false,
+          copyable: true,
+          qr: false,
+          filename: null,
+        })),
       },
     }
   },
@@ -225,29 +234,67 @@ export const registerCompose = sdk.Action.withInput(
       default: 'compose.yaml',
       required: true,
     }),
+    viteService: sdk.Value.text({
+      name: i18n('Vite Compose service (optional)'),
+      default: null,
+      required: false,
+    }),
+    previewUrl: sdk.Value.text({
+      name: i18n('Vite preview URL (optional)'),
+      default: null,
+      required: false,
+    }),
     autostart: sdk.Value.toggle({
       name: i18n('Start with Dev Workspace'),
       default: false,
     }),
   }),
   async () => ({}),
-  async ({ effects, input }) => ({
-    version: '1',
-    title: i18n('Register Compose Project'),
-    message: await runContainerTool(
-      effects,
-      [
-        'register',
-        '--',
-        input.name,
-        input.directory,
-        input.file,
-        input.autostart ? 'on' : 'off',
-      ],
-      true,
-    ),
-    result: null,
-  }),
+  async ({ effects, input }) => {
+    const previewArgs: string[] = []
+    if (input.previewUrl || input.viteService) {
+      const rawUrl = input.previewUrl?.trim().replace(/\/$/, '')
+      if (!input.viteService || !rawUrl)
+        throw new Error(
+          i18n('Enter a Compose service and an active preview URL.'),
+        )
+      const leases = (await readPreviewConfig()).leases
+      for (const lease of leases) {
+        if (lease.expiresAt <= Date.now()) continue
+        const urls = await previewUrls(effects, lease)
+        if (urls.some((value) => new URL(value).origin === rawUrl)) {
+          previewArgs.push(
+            input.viteService,
+            new URL(rawUrl).hostname,
+            String(lease.expiresAt),
+          )
+          break
+        }
+      }
+      if (!previewArgs.length)
+        throw new Error(
+          i18n('Enter a Compose service and an active preview URL.'),
+        )
+    }
+    return {
+      version: '1' as const,
+      title: i18n('Register Compose Project'),
+      message: await runContainerTool(
+        effects,
+        [
+          'register',
+          '--',
+          input.name,
+          input.directory,
+          input.file,
+          input.autostart ? 'on' : 'off',
+          ...previewArgs,
+        ],
+        true,
+      ),
+      result: null,
+    }
+  },
 )
 
 export const manageCompose = sdk.Action.withInput(

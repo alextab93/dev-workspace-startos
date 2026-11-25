@@ -66,7 +66,7 @@ FileBrowser's search results can lag changes made through VS Code. If you also w
 2. Save your work and stop Dev Workspace. Open **Configure Project Source**, select **Nextcloud**, and submit. The service address is discovered automatically.
 3. Open the authorization link, sign in to Nextcloud if needed, and grant access to Dev Workspace. Your normal password stays in the Nextcloud sign-in page; the connection receives its own app password. Return to StartOS after approval.
 4. Open **Choose Nextcloud Project Folder**. Choose **Use folder** for the folder you want. To reach a nested folder, select **Browse folder**, submit, then reopen the action to see its children. Only folders that permit editing offer **Use folder**.
-5. Start Dev Workspace, reconnect desktop VS Code, and open `/projects-shared` or a project beneath it.
+5. Start Dev Workspace and reconnect desktop VS Code. If your shared folder contains several repositories, use **File → Open Folder** and enter the specific repository, for example `/projects-shared/my-project`. For related projects, use **File → Add Folder to Workspace** for each repository you need. Opening the whole collection makes editor searches traverse its other projects over WebDAV. Keep dependency installations, container checkouts and build output under `/home/dev/projects`.
 
 An existing connected account is reused when you select Nextcloud again. **Connect Nextcloud Account** starts a new authorization when you want another account or need to reconnect. Authorization links expire after 20 minutes. **Cancel Nextcloud Setup** preserves the active project source; close any unfinished authorization tab and let its link expire. Completed grants can be revoked in Nextcloud personal **Security** settings. [Nextcloud Login Flow](https://docs.nextcloud.com/server/stable/developer_manual/client_apis/LoginFlow/index.html#login-flow-v2)
 
@@ -167,7 +167,7 @@ Run a direct Rails process in its project directory:
 bin/rails server -b 127.0.0.1 -p 3000
 ```
 
-Use the project's installed runtime and usual environment variables. A direct Vite process can use `npx vite --host 127.0.0.1 --port 5173 --strictPort`. Select `5173` when adding that preview. If a framework needs the preview origin before it starts, create the preview on its intended port, copy its assigned URL, configure the application, and start it. The waiting state is expected until it listens.
+Use the project's installed runtime and usual environment variables. For a direct Vite process, create the preview first and copy **Vite launch command** from the result or **List Web Previews**. Run it in the project directory after installing its dependencies. It allows the hostname of the displayed HTTPS address and starts the installed Vite on the selected application port. For a loopback-only session, you can use `npx vite --host 127.0.0.1 --port 5173 --strictPort`. Select `5173` when adding that preview. If a framework needs the preview origin before it starts, create the preview on its intended port, copy its assigned URL, configure the application, and start it. The waiting state is expected until it listens.
 
 Applications in Podman need a published workspace port. For an application that listens on port 3000 inside its container, a Compose service can include:
 
@@ -313,6 +313,8 @@ Inside that session, enter the project directory and start its usual command. Pr
 
 Use **Containers → Register Compose Project** to select a local project, its Compose file and a stable project name. Enable **Start with Dev Workspace** to start the project after the engine becomes ready. **Manage Compose Project** shows status and supports start, stop and unregister. Stop preserves the next-start preference. Register the same project again to change it. Unregister a stopped project to remove its registration and retain its containers and volumes. Run `workspace-compose logs NAME` over SSH for recent logs.
 
+For a supervised Vite frontend, create the preview first. In **Register Compose Project**, enter the frontend service name from your Compose file and paste the active preview URL. Start and autostart pass its exact hostname to Vite in that service. Publish the application port on workspace loopback and configure Vite to listen on the container network interface. Register again after changing the preview hostname or extending its original expiry. Leave both fields empty for projects without Vite.
+
 Relaunch shell commands and tmux sessions manually after workspace restart. Preview expiry controls browser access independently of application startup.
 
 ## Managing access
@@ -350,6 +352,14 @@ STARTOS_USE_PODMAN=1 make x86
 ```
 
 Use `make arm` for an ARM target with a compatible builder. Native builds match the server architecture; cross-architecture execution is not configured by this package. Build files and dependencies stay on server storage.
+
+For a local working copy, open **Actions → Packages → Import Project to Local**. Enter the shared folder relative to `/projects-shared`, choose a new folder name under `/home/dev/projects`, and confirm. Keep the project idle during import. **Installation Status** shows the copy and verification stages and then the full path to open in VS Code. After an interruption, run the action again with the same name. The final folder appears only after verification succeeds, and an existing destination is preserved.
+
+The copy includes hidden files, the Git index, staged changes, unstaged edits and untracked files. For a Nextcloud Git project, the importer uses index modes to reconstruct tracked executables and symlinks from the bytes exposed by WebDAV. WebDAV has no Unix mode information for untracked files. Set the executable bit locally on any untracked scripts that need it. A linked worktree with external Git metadata requires an independent checkout.
+
+To export a finished build, open **Actions → Packages → Export Artifact to Shared Folder**. Enter the artifact path relative to `/home/dev/projects` and an existing directory relative to `/projects-shared`. Use `.` for the shared root. For example, exporting `my-service/my-service_x86_64.s9pk` to `releases` creates `releases/my-service_x86_64.s9pk` in the selected provider. An existing name prevents export. **Installation Status** shows the transfer stage and the verified SHA-256.
+
+Nextcloud exports need local staging space for one copy. The action checks the upload queue, writes through WebDAV and reads the file back from Nextcloud to verify the digest. If a connection drops after upload, inspect the destination and compare its SHA-256 with the local artifact before retrying.
 
 The **Packages** actions provide a library of completed `.s9pk` files from local projects and `/projects-shared`:
 
@@ -410,3 +420,11 @@ Podman is optional and uses local project storage; `docker` is its compatibility
 The workspace is Linux. Native macOS applications and Apple-specific tests still need a Mac. CPU-specific extensions and native dependencies may need a compatible build.
 
 If you publish SSH through a tunnel to keep the server's origin address private, send the workspace's outbound traffic through that tunnel too. Git hosts, package registries, and runtime download servers otherwise receive connections through its normal outbound route. No route change is needed when the tunnel is used only for reachability.
+
+### Project release status
+
+In the project terminal, pipe the project's release report into `workspace-release-status save`. For a project with a compatible release command, run `bin/release status | workspace-release-status save` from its local checkout. The command atomically saves the observation in `.ai-workspace/release-status.json`. A project supplies its own validation, artifact lookup and deployment health checks. Include only information intended for everyone with workspace access.
+
+The JSON object contains a timezone-qualified `checkedAt` timestamp and three records named `validated`, `published` and `deployed`. Each record can include project-specific revisions, timestamps, checks and HTTPS run links. Use `null` for missing evidence. Refresh the report to reflect later changes.
+
+Read the same report with `workspace-release-status show PROJECT` or open **Actions → Releases → Project Release Status** and enter the project directory relative to `/home/dev/projects`. The action reads the saved report. Release credentials and approval stay in the project's CI workflow.

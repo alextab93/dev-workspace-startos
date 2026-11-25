@@ -1,13 +1,16 @@
 #!/usr/bin/python3
 import argparse
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
+import signal
 import subprocess
 import sys
 import time
+import uuid
 
 
 ROOTS = ('/projects-shared', '/home/dev/projects')
@@ -181,6 +184,65 @@ def scan(roots=None):
     return {'packages': packages, 'errors': errors, 'truncated': truncated, 'statistics': statistics}
 
 
+def export_filebrowser(source, folder, progress=None):
+    local, shared = Path(ROOTS[1]), Path(ROOTS[0])
+    source, folder = Path(source), Path(folder)
+    if source.is_absolute() or folder.is_absolute() or '..' in source.parts + folder.parts or not source.name:
+        raise ValueError('Choose paths relative to the local and shared project directories.')
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(shared, directory_flags)
+    try:
+        for part in folder.parts:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        with os.fdopen(open_project_file(local / source), 'rb') as artifact:
+            before = identity(os.fstat(artifact.fileno()))
+            try:
+                os.stat(source.name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError('The destination file already exists.')
+            temporary = None
+            try:
+                descriptor = os.open('.', os.O_TMPFILE | os.O_RDWR, 0o644, dir_fd=directory)
+            except OSError as error:
+                if error.errno not in (errno.EOPNOTSUPP, errno.EINVAL):
+                    raise
+                temporary = '.workspace-export-' + uuid.uuid4().hex
+                descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_RDWR, 0o644, dir_fd=directory)
+            try:
+                with os.fdopen(descriptor, 'w+b') as staged:
+                    if progress:
+                        progress('copy')
+                    expected = hashlib.sha256()
+                    while block := artifact.read(1024 * 1024):
+                        staged.write(block)
+                        expected.update(block)
+                    staged.flush()
+                    os.fsync(descriptor)
+                    if progress:
+                        progress('verify')
+                    staged.seek(0)
+                    actual = hashlib.sha256()
+                    while block := staged.read(1024 * 1024):
+                        actual.update(block)
+                    if actual.digest() != expected.digest() or identity(os.fstat(artifact.fileno())) != before:
+                        raise ValueError('Artifact changed or failed verification.')
+                    if temporary:
+                        os.link(temporary, source.name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+                    else:
+                        os.link('/proc/self/fd/' + str(descriptor), source.name, dst_dir_fd=directory, follow_symlinks=True)
+                    os.fsync(directory)
+                    return {'file': str(folder / source.name), 'bytes': before[2], 'sha256': actual.hexdigest()}
+            finally:
+                if temporary:
+                    os.unlink(temporary, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
 def stream(filename):
     descriptor = open_project_file(filename)
     try:
@@ -190,24 +252,40 @@ def stream(filename):
             sys.stdout.buffer.write(data)
             remaining -= len(data)
         sys.stdout.buffer.flush()
-        if identity(os.fstat(descriptor)) != before:
+        if remaining or identity(os.fstat(descriptor)) != before:
             raise ValueError('The package changed while being copied.')
     finally:
         os.close(descriptor)
 
 
+def interrupt(signum, frame):
+    raise InterruptedError('Export interrupted.')
+
+
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, interrupt)
     try:
         parser = argparse.ArgumentParser()
         commands = parser.add_subparsers(dest='operation', required=True)
         commands.add_parser('scan').add_argument('--scope', choices=('both', 'local', 'shared'), default='both')
         commands.add_parser('stream').add_argument('path')
+        export = commands.add_parser('export-filebrowser')
+        export.add_argument('source')
+        export.add_argument('folder')
         args = parser.parse_args()
         if args.operation == 'scan':
             roots = ROOTS if args.scope == 'both' else (ROOTS[1],) if args.scope == 'local' else (ROOTS[0],)
             print(json.dumps(scan(roots)))
+        elif args.operation == 'export-filebrowser':
+            print(json.dumps(export_filebrowser(args.source, args.folder, progress=lambda phase: print(phase, flush=True))))
         else:
             stream(args.path)
+    except FileExistsError:
+        print('The destination file already exists.', file=sys.stderr)
+        sys.exit(1)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        if args.operation == 'export-filebrowser':
+            print('Export failed. Check both paths, free space and destination permissions.', file=sys.stderr)
+            sys.exit(1)
         print('The project package could not be read safely.', file=sys.stderr)
         sys.exit(1)

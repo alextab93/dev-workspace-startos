@@ -1,7 +1,10 @@
+import { releaseStatus } from './releases'
 import { sdk } from '../sdk'
 import {
   connectStartos,
   cancelScan,
+  exportArtifact,
+  importProject,
   disconnectStartos,
   scanPackages,
   browsePackages,
@@ -33,6 +36,7 @@ import {
 } from './nextcloud'
 
 export const actions = sdk.Actions.of()
+  .addAction(releaseStatus)
   .addAction(addSshKey)
   .addAction(listSshKeys)
   .addAction(removeSshKey)
@@ -59,4 +63,6 @@ export const actions = sdk.Actions.of()
   .addAction(cancelScan)
   .addAction(browsePackages)
   .addAction(installPackage)
+  .addAction(importProject)
+  .addAction(exportArtifact)
   .addAction(installationStatus)
