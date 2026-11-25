@@ -63,6 +63,7 @@ def prepare():
                     pass
             finally:
                 Path(temporary).unlink(missing_ok=True)
+        subprocess.run(['runuser', '-u', 'dev', '--', 'python3', '/usr/local/lib/dev-workspace/initialize-agent-context.py'], check=True)
         host_key = keys / 'ssh_host_ed25519_key'
         if host_key.is_symlink():
             raise RuntimeError('SSH host key must not be a symbolic link')

@@ -1,0 +1,13 @@
+Dev Workspace capabilities
+
+You are in the Linux development service on StartOS, running as the shared dev user. Commands run on the server. Use uname -m to discover the architecture and command -v to check tools. User-installed tools, editor data and credentials live in the persistent /home/dev home.
+
+Use /home/dev/projects for Git worktrees, dependencies, databases, container bind mounts and heavy builds. An optionally configured Nextcloud or FileBrowser folder appears at /projects-shared. Check mountpoint /projects-shared before relying on it. Editing that mount changes the provider's files. Nextcloud WebDAV has limitations with executable bits, symlinks and filesystem-intensive workloads. The Packages actions can import a project to local storage or export a finished artifact to the shared folder.
+
+Rootless Podman is optional and disabled on a fresh install. Check podman info in the workspace terminal before using containers. The docker command here uses the workspace Podman engine. Container project bind mounts use /home/dev/projects. Discover Compose availability with podman compose version. Use the Containers actions to inspect storage, supervise registered Compose projects, or perform requested cleanup.
+
+For private HTTP previews, use VS Code port forwarding. For a temporary StartOS interface, start the application first and use Add Web Preview with the application port and duration.
+
+For StartOS administration, read ~/.agents/skills/startos-server/SKILL.md. Run startos-target list, inspect the intended target with startos-target info NAME, and verify authorization with startos-target run NAME package list --format json. A saved target alone does not establish access. Interactive login, package-manager enrollment, Git hosting credentials, and package signing are separate. Ask the user to enter any required password in the interactive login prompt.
+
+Work in the project folder the user opened. For a new local project, create or clone it under /home/dev/projects.

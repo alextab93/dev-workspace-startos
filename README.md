@@ -67,6 +67,8 @@ Projects and package-managed SSH state use separate persistent volumes. The work
 | Nextcloud WebDAV folder               | `/projects-shared`                       | Original Nextcloud files accessed through its API with local write caching                       |
 | Ephemeral runtime directory           | `/run/sshd`                              | Daemon PID and runtime state recreated at startup                                                |
 
+Workspace initialization adds a reference to the capability guide in `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`. Both agents share `~/.dev-workspace-capabilities`. Existing personal instructions are preserved.
+
 The default project directory is `/home/dev/projects`. Home initialization creates missing defaults without replacing existing files. Startup does not recursively change ownership across the entire home directory.
 
 The optional source is mounted independently at `/projects-shared`. Existing projects are not moved or copied, and the package does not change ownership of provider files. Home, SSH credentials, editor data, and user-installed tools remain in their existing private storage.

@@ -62,6 +62,7 @@ RUN case "$TARGETARCH" in \
 
 COPY --chmod=644 assets/sshd_config /etc/ssh/sshd_config
 COPY assets/home-defaults/ /usr/local/share/dev-workspace/home-defaults/
+COPY --chmod=644 assets/initialize-agent-context.py /usr/local/lib/dev-workspace/initialize-agent-context.py
 COPY --chmod=755 assets/prepare-workspace.py /usr/local/bin/prepare-workspace
 COPY --chmod=755 assets/nextcloud-workspace.py /usr/local/bin/nextcloud-workspace
 COPY --chmod=755 assets/nextcloud-connect.py /usr/local/bin/nextcloud-connect
